@@ -1,0 +1,114 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# Environment files
+.env
+.env.local
+.env.*.local
+# .env.test - NEEDED for testing in Docker container
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+coverage.xml
+*.cover
+
+# Documentation
+docs/
+*.md
+!RAILWAY-DEPLOYMENT.md
+!RAILWAY-QUICKSTART.md
+!prompts/*.md
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# Logs
+*.log
+logs/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Node modules (if any)
+node_modules/
+chatwoot_mcp/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Railway specific
+.railway/
+
+# Dashboard (Reflex)
+# dashboard/ - REMOVED: needed for Dockerfile.dashboard
+# rxconfig.py - REMOVED: needed for dashboard
+.web/
+
+# Development scripts (KEEP scripts/ for setup_chatwoot_labels.py)
+# scripts/ - REMOVED: needed for Chatwoot setup
+test_*.py
+validate_*.py
+run_tests.py
+
+# Jupyter notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# Backup files
+*.bak
+*.backup
+
+# Large files
+*.tar
+*.tar.gz
+*.zip

@@ -1,0 +1,35 @@
+# ============================================
+# Reflex Dashboard Dockerfile
+# ============================================
+
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies for Reflex
+RUN apt-get update && apt-get install -y \
+    curl \
+    nodejs \
+    npm \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy dashboard code
+COPY dashboard/ ./dashboard/
+
+# Note: rxconfig.py will be mounted via docker-compose volume
+# Reflex init will be done at runtime when rxconfig.py is present
+WORKDIR /app
+
+# Expose ports (frontend + backend)
+EXPOSE 3002 8001
+
+# Run Reflex dashboard (init happens on first run)
+CMD ["reflex", "run", "--loglevel", "info"]

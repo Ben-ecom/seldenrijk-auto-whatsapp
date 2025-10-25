@@ -1,0 +1,22 @@
+{
+  "event": "message_created",
+  "message_type": "incoming",
+  "id": "test_123",
+  "conversation": {
+    "id": 12345,
+    "inbox_id": 1,
+    "status": "open"
+  },
+  "sender": {
+    "id": 67890,
+    "name": "Test Customer",
+    "phone_number": "+31612345678",
+    "type": "contact"
+  },
+  "content": "Hallo, ik heb interesse in de Mercedes C-Klasse 2020 van €28.500. Is deze nog beschikbaar? Ik zou graag een proefrit willen maken volgende week.",
+  "created_at": "2025-10-12T14:00:00Z",
+  "private": false,
+  "content_type": "text",
+  "content_attributes": {},
+  "channel": "whatsapp"
+}

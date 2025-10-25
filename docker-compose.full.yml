@@ -1,0 +1,284 @@
+# ============================================
+# WhatsApp Recruitment Platform - FULL STACK
+# Includes Chatwoot Self-Hosted
+# ============================================
+
+version: '3.8'
+
+services:
+  # ============ CHATWOOT STACK ============
+
+  # PostgreSQL for Chatwoot (with pgvector extension)
+  chatwoot-postgres:
+    image: ankane/pgvector:v0.5.1
+    container_name: chatwoot-postgres
+    restart: unless-stopped
+    ports:
+      - "5433:5432"  # Map to 5433 to avoid conflicts with local PostgreSQL
+    volumes:
+      - chatwoot-postgres-data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=chatwoot
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${CHATWOOT_POSTGRES_PASSWORD:-chatwoot123}
+    networks:
+      - recruitment-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for Chatwoot
+  chatwoot-redis:
+    image: redis:7-alpine
+    container_name: chatwoot-redis
+    restart: unless-stopped
+    volumes:
+      - chatwoot-redis-data:/data
+    networks:
+      - recruitment-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # Chatwoot Web + Sidekiq
+  chatwoot:
+    image: chatwoot/chatwoot:latest
+    container_name: chatwoot
+    restart: unless-stopped
+    ports:
+      - "3001:3000"  # Chatwoot dashboard (external:internal)
+    depends_on:
+      - chatwoot-postgres
+      - chatwoot-redis
+    environment:
+      # Database
+      - POSTGRES_HOST=chatwoot-postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DATABASE=chatwoot
+      - POSTGRES_USERNAME=postgres
+      - POSTGRES_PASSWORD=${CHATWOOT_POSTGRES_PASSWORD:-chatwoot123}
+
+      # Redis
+      - REDIS_URL=redis://chatwoot-redis:6379
+
+      # Rails
+      - RAILS_ENV=production
+      - SECRET_KEY_BASE=${CHATWOOT_SECRET_KEY_BASE}
+      - FRONTEND_URL=http://localhost:3001
+
+      # Chatwoot settings
+      - INSTALLATION_NAME=WhatsApp Recruitment
+      - ENABLE_ACCOUNT_SIGNUP=false
+      - FORCE_SSL=false
+
+      # Email (optional - for notifications)
+      - MAILER_SENDER_EMAIL=${MAILER_SENDER_EMAIL:-noreply@recruitment.local}
+      - SMTP_ADDRESS=${SMTP_ADDRESS:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USERNAME=${SMTP_USERNAME:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+
+      # Storage (local for now)
+      - ACTIVE_STORAGE_SERVICE=local
+
+    volumes:
+      - chatwoot-storage:/app/storage
+    networks:
+      - recruitment-network
+    entrypoint: sh
+    command:
+      - -c
+      - |
+        bundle exec rails db:chatwoot_prepare
+        bundle exec rails s -p 3000 -b '0.0.0.0'
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Chatwoot Sidekiq (background jobs)
+  chatwoot-sidekiq:
+    image: chatwoot/chatwoot:latest
+    container_name: chatwoot-sidekiq
+    restart: unless-stopped
+    depends_on:
+      - chatwoot-postgres
+      - chatwoot-redis
+    environment:
+      # Same as chatwoot service
+      - POSTGRES_HOST=chatwoot-postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DATABASE=chatwoot
+      - POSTGRES_USERNAME=postgres
+      - POSTGRES_PASSWORD=${CHATWOOT_POSTGRES_PASSWORD:-chatwoot123}
+      - REDIS_URL=redis://chatwoot-redis:6379
+      - RAILS_ENV=production
+      - SECRET_KEY_BASE=${CHATWOOT_SECRET_KEY_BASE}
+    volumes:
+      - chatwoot-storage:/app/storage
+    networks:
+      - recruitment-network
+    command: bundle exec sidekiq -C config/sidekiq.yml
+
+  # ============ RECRUITMENT PLATFORM STACK ============
+
+  # Redis for Celery
+  redis:
+    image: redis:7-alpine
+    container_name: recruitment-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - recruitment-redis-data:/data
+    restart: unless-stopped
+    networks:
+      - recruitment-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # FastAPI Backend
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: recruitment-api
+    ports:
+      - "8000:8000"
+    environment:
+      # AI Models
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+
+      # Database
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
+      - DATABASE_URL=${DATABASE_URL}
+
+      # Chatwoot (now local)
+      - CHATWOOT_BASE_URL=http://chatwoot:3000
+      - CHATWOOT_API_TOKEN=${CHATWOOT_API_TOKEN}
+      - CHATWOOT_ACCOUNT_ID=${CHATWOOT_ACCOUNT_ID}
+      - CHATWOOT_WEBHOOK_SECRET=${CHATWOOT_WEBHOOK_SECRET}
+
+      # WhatsApp
+      - DIALOG360_API_KEY=${DIALOG360_API_KEY}
+      - DIALOG360_WEBHOOK_SECRET=${DIALOG360_WEBHOOK_SECRET}
+      - WHATSAPP_VERIFY_TOKEN=${WHATSAPP_VERIFY_TOKEN}
+
+      # Celery/Redis
+      - REDIS_URL=redis://redis:6379/0
+
+      # Monitoring
+      - SENTRY_DSN=${SENTRY_DSN}
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - chatwoot
+    restart: unless-stopped
+    networks:
+      - recruitment-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Celery Worker
+  celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: recruitment-celery-worker
+    command: celery -A app.celery_app worker --loglevel=info --concurrency=4 --max-tasks-per-child=1000
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
+      - DATABASE_URL=${DATABASE_URL}
+      - CHATWOOT_BASE_URL=http://chatwoot:3000
+      - CHATWOOT_API_TOKEN=${CHATWOOT_API_TOKEN}
+      - CHATWOOT_ACCOUNT_ID=${CHATWOOT_ACCOUNT_ID}
+      - REDIS_URL=redis://redis:6379/0
+      - SENTRY_DSN=${SENTRY_DSN}
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - api
+    restart: unless-stopped
+    networks:
+      - recruitment-network
+
+  # Celery Beat
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: recruitment-celery-beat
+    command: celery -A app.celery_app beat --loglevel=info
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
+      - DATABASE_URL=${DATABASE_URL}
+      - CHATWOOT_BASE_URL=http://chatwoot:3000
+      - CHATWOOT_API_TOKEN=${CHATWOOT_API_TOKEN}
+      - CHATWOOT_ACCOUNT_ID=${CHATWOOT_ACCOUNT_ID}
+      - SENTRY_DSN=${SENTRY_DSN}
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - api
+    restart: unless-stopped
+    networks:
+      - recruitment-network
+
+  # Reflex Dashboard
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    container_name: recruitment-dashboard
+    ports:
+      - "3002:3002"  # Frontend
+      - "8001:8001"  # Reflex backend
+    environment:
+      - API_BASE_URL=http://api:8000
+    depends_on:
+      - api
+    volumes:
+      - ./dashboard:/app/dashboard
+      - ./rxconfig.py:/app/rxconfig.py  # Mount config separately
+    restart: unless-stopped
+    networks:
+      - recruitment-network
+
+networks:
+  recruitment-network:
+    driver: bridge
+
+volumes:
+  # Chatwoot volumes
+  chatwoot-postgres-data:
+  chatwoot-redis-data:
+  chatwoot-storage:
+
+  # Recruitment platform volumes
+  recruitment-redis-data:

@@ -1,0 +1,213 @@
+# ============================================
+# Seldenrijk Auto WhatsApp AI Platform
+# Docker Compose Setup
+# ============================================
+
+version: '3.8'
+
+services:
+  # Redis for Celery broker/backend
+  redis:
+    image: redis:7-alpine
+    container_name: seldenrijk-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    networks:
+      - seldenrijk-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # FastAPI Backend
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+      args:
+        CACHE_DATE: "${CACHE_DATE:-now}"
+    container_name: seldenrijk-api
+    ports:
+      - "8000:8000"
+    environment:
+      # AI Models
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+
+      # Database
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
+      - DATABASE_URL=${DATABASE_URL}
+
+      # Chatwoot
+      - CHATWOOT_BASE_URL=${CHATWOOT_BASE_URL}
+      - CHATWOOT_API_TOKEN=${CHATWOOT_API_TOKEN}
+      - CHATWOOT_ACCOUNT_ID=${CHATWOOT_ACCOUNT_ID}
+      - CHATWOOT_WEBHOOK_SECRET=${CHATWOOT_WEBHOOK_SECRET}
+
+      # WhatsApp
+      - DIALOG360_API_KEY=${DIALOG360_API_KEY}
+      - DIALOG360_WEBHOOK_SECRET=${DIALOG360_WEBHOOK_SECRET}
+      - WHATSAPP_VERIFY_TOKEN=${WHATSAPP_VERIFY_TOKEN}
+
+      # Twilio WhatsApp
+      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID}
+      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}
+      - TWILIO_WHATSAPP_NUMBER=${TWILIO_WHATSAPP_NUMBER}
+      - TWILIO_WEBHOOK_URL=${TWILIO_WEBHOOK_URL}
+
+      # Celery/Redis
+      - REDIS_URL=redis://redis:6379/0
+
+      # WAHA (WhatsApp HTTP API)
+      - WAHA_BASE_URL=http://waha:3000
+      - WAHA_API_KEY=seldenrijk-waha-2025
+      - WAHA_SESSION=default
+
+      # Monitoring
+      - SENTRY_DSN=${SENTRY_DSN}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    env_file:
+      - .env
+    # volumes:
+    #   - ./app:/app  # Commented out for production - using Docker image instead
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - seldenrijk-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Celery Worker
+  celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+      args:
+        CACHE_DATE: "${CACHE_DATE:-now}"
+    container_name: seldenrijk-celery-worker
+    command: celery -A app.celery_app worker --loglevel=info --concurrency=4 --max-tasks-per-child=1000 -Q celery,messages,gdpr,crm
+    environment:
+      # Python path for fork processes
+      - PYTHONPATH=/app
+      # Same as API
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
+      - DATABASE_URL=${DATABASE_URL}
+      - CHATWOOT_BASE_URL=${CHATWOOT_BASE_URL}
+      - CHATWOOT_API_TOKEN=${CHATWOOT_API_TOKEN}
+      - CHATWOOT_ACCOUNT_ID=${CHATWOOT_ACCOUNT_ID}
+      - REDIS_URL=redis://redis:6379/0
+      - WAHA_BASE_URL=http://waha:3000
+      - WAHA_API_KEY=seldenrijk-waha-2025
+      - WAHA_SESSION=default
+      - SENTRY_DSN=${SENTRY_DSN}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    env_file:
+      - .env
+    # volumes:
+    #   - ./app:/app  # Commented out for production - using Docker image instead
+    depends_on:
+      - redis
+      - api
+    restart: unless-stopped
+    networks:
+      - seldenrijk-network
+    healthcheck:
+      test: ["CMD", "celery", "-A", "app.celery_app", "inspect", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Celery Beat (periodic tasks)
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+      args:
+        CACHE_DATE: "${CACHE_DATE:-now}"
+    container_name: seldenrijk-celery-beat
+    command: celery -A app.celery_app beat --loglevel=info
+    environment:
+      - PYTHONPATH=/app
+      - REDIS_URL=redis://redis:6379/0
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
+      - DATABASE_URL=${DATABASE_URL}
+      - CHATWOOT_BASE_URL=${CHATWOOT_BASE_URL}
+      - CHATWOOT_API_TOKEN=${CHATWOOT_API_TOKEN}
+      - CHATWOOT_ACCOUNT_ID=${CHATWOOT_ACCOUNT_ID}
+      - SENTRY_DSN=${SENTRY_DSN}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    env_file:
+      - .env
+    # volumes:
+    #   - ./app:/app  # Commented out for production - using Docker image instead
+    depends_on:
+      - redis
+      - api
+    restart: unless-stopped
+    networks:
+      - seldenrijk-network
+
+  # Reflex Dashboard
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    container_name: seldenrijk-dashboard
+    ports:
+      - "3002:3002"  # Frontend
+      - "8001:8001"  # Reflex backend
+    environment:
+      - API_BASE_URL=http://api:8000
+    depends_on:
+      - api
+    # volumes:
+    #   - ./dashboard:/app/dashboard  # Commented out for production - using Docker image instead
+    restart: unless-stopped
+    networks:
+      - seldenrijk-network
+
+  # WAHA - WhatsApp HTTP API (Open Source)
+  waha:
+    image: devlikeapro/waha:arm
+    container_name: seldenrijk-waha
+    ports:
+      - "3003:3000"  # WAHA API
+    environment:
+      - WHATSAPP_HOOK_URL=http://api:8000/webhooks/waha
+      - WHATSAPP_HOOK_EVENTS=message,message.any,state.change,group.join
+      - WAHA_PRINT_QR=true
+      - WAHA_API_KEY=seldenrijk-waha-2025  # Fixed API key for consistent access
+    volumes:
+      - waha-data:/app/.sessions
+    restart: unless-stopped
+    networks:
+      - seldenrijk-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  seldenrijk-network:
+    driver: bridge
+
+volumes:
+  redis-data:
+  waha-data:

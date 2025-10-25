@@ -1,0 +1,79 @@
+# ============================================
+# Production Dockerfile for Railway Deployment
+# WhatsApp Recruitment Platform v5.1
+# ============================================
+
+# Use Python 3.11 slim image for smaller size
+FROM python:3.11-slim as base
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    POETRY_VERSION=1.7.1
+
+# Set work directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    postgresql-client \
+    libpq-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# ============================================
+# Builder stage - Install Python dependencies
+# ============================================
+FROM base as builder
+
+# Copy requirements file
+COPY requirements.txt .
+
+# Create virtual environment and install dependencies
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Install Python packages
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install -r requirements.txt
+
+# ============================================
+# Production stage - Final image
+# ============================================
+FROM base as production
+
+# Copy virtual environment from builder
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Create non-root user for security
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
+# Copy application code
+COPY --chown=appuser:appuser . /app
+
+# Create necessary directories
+RUN mkdir -p /app/logs /app/data && \
+    chown -R appuser:appuser /app/logs /app/data
+
+# Switch to non-root user
+USER appuser
+
+# Expose port
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Set git commit SHA (for Sentry release tracking)
+ARG GIT_COMMIT_SHA=unknown
+ENV GIT_COMMIT_SHA=${GIT_COMMIT_SHA}
+
+# Startup script
+RUN chmod +x start.sh
+CMD ["bash", "start.sh"]

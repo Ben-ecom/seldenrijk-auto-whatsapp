@@ -1,0 +1,320 @@
+# ============================================
+# WhatsApp Recruitment Platform v4.0
+# Docker Compose Setup - Multi-Channel Edition
+# NEW: Chatwoot, Redis, Celery Workers
+# ============================================
+
+version: '3.8'
+
+services:
+  # ============================================
+  # CORE SERVICES (Updated from v3.0)
+  # ============================================
+  
+  # FastAPI Backend
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: recruitment-api-v4
+    ports:
+      - "8000:8000"
+    environment:
+      # AI Models
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+
+      # Database
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+
+      # WhatsApp (kept from v3.0)
+      - THREESIXTY_DIALOG_API_KEY=${THREESIXTY_DIALOG_API_KEY}
+      - THREESIXTY_DIALOG_PHONE_NUMBER=${THREESIXTY_DIALOG_PHONE_NUMBER}
+
+      # NEW: Chatwoot Integration
+      - CHATWOOT_URL=http://chatwoot:3000
+      - CHATWOOT_API_TOKEN=${CHATWOOT_API_TOKEN}
+      - CHATWOOT_ACCOUNT_ID=${CHATWOOT_ACCOUNT_ID}
+
+      # NEW: Redis for Celery
+      - REDIS_URL=redis://redis:6379/0
+    env_file:
+      - .env
+    volumes:
+      - ./api:/app/api
+      - ./agent:/app/agent
+      - ./database:/app/database
+    restart: unless-stopped
+    networks:
+      - recruitment-network
+    depends_on:
+      - redis
+      - chatwoot
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Reflex Dashboard (Updated)
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    container_name: recruitment-dashboard-v4
+    ports:
+      - "3002:3002"  # Frontend
+      - "8001:8001"  # Reflex backend
+    environment:
+      - API_BASE_URL=http://api:8000
+      - CHATWOOT_URL=http://chatwoot:3000
+    depends_on:
+      - api
+      - chatwoot
+    volumes:
+      - ./dashboard:/app/dashboard
+    restart: unless-stopped
+    networks:
+      - recruitment-network
+
+  # ============================================
+  # NEW v4.0 SERVICES - MULTI-CHANNEL SUPPORT
+  # ============================================
+
+  # Chatwoot - Multi-Channel Inbox
+  chatwoot:
+    image: chatwoot/chatwoot:latest
+    container_name: chatwoot-inbox
+    ports:
+      - "3000:3000"
+    environment:
+      # Database
+      - POSTGRES_HOST=chatwoot-db
+      - POSTGRES_DATABASE=chatwoot_production
+      - POSTGRES_USERNAME=postgres
+      - POSTGRES_PASSWORD=${CHATWOOT_DB_PASSWORD}
+      
+      # Redis
+      - REDIS_URL=redis://redis:6379/1
+      
+      # Rails
+      - SECRET_KEY_BASE=${CHATWOOT_SECRET_KEY}
+      - RAILS_ENV=production
+      - RAILS_LOG_TO_STDOUT=true
+      
+      # Frontend URL
+      - FRONTEND_URL=http://localhost:3000
+      
+      # Email (optional - for notifications)
+      # - MAILER_SENDER_EMAIL=noreply@yourcompany.com
+      # - SMTP_ADDRESS=smtp.gmail.com
+      # - SMTP_PORT=587
+      # - SMTP_USERNAME=${SMTP_USERNAME}
+      # - SMTP_PASSWORD=${SMTP_PASSWORD}
+    depends_on:
+      - chatwoot-db
+      - redis
+    volumes:
+      - chatwoot-data:/app/public
+      - chatwoot-storage:/app/storage
+    restart: unless-stopped
+    networks:
+      - recruitment-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # PostgreSQL for Chatwoot
+  chatwoot-db:
+    image: postgres:14-alpine
+    container_name: chatwoot-postgres
+    environment:
+      - POSTGRES_DB=chatwoot_production
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${CHATWOOT_DB_PASSWORD}
+    volumes:
+      - chatwoot-db-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - recruitment-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis - Used by Chatwoot + Celery
+  redis:
+    image: redis:7-alpine
+    container_name: redis-broker
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+    networks:
+      - recruitment-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================
+  # BACKGROUND JOBS (Celery Workers)
+  # ============================================
+
+  # Celery Worker - General Tasks
+  celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: celery-worker
+    command: celery -A agent.celery_app worker --loglevel=info --concurrency=4
+    environment:
+      # Database
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+      
+      # Redis
+      - REDIS_URL=redis://redis:6379/0
+      
+      # AI Models
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      
+      # Chatwoot
+      - CHATWOOT_URL=http://chatwoot:3000
+      - CHATWOOT_API_TOKEN=${CHATWOOT_API_TOKEN}
+      - CHATWOOT_ACCOUNT_ID=${CHATWOOT_ACCOUNT_ID}
+    depends_on:
+      - redis
+      - chatwoot
+    volumes:
+      - ./agent:/app/agent
+    restart: unless-stopped
+    networks:
+      - recruitment-network
+
+  # Celery Beat - Scheduled Tasks
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: celery-beat
+    command: celery -A agent.celery_app beat --loglevel=info
+    environment:
+      # Database
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+      
+      # Redis
+      - REDIS_URL=redis://redis:6379/0
+      
+      # Chatwoot
+      - CHATWOOT_URL=http://chatwoot:3000
+      - CHATWOOT_API_TOKEN=${CHATWOOT_API_TOKEN}
+    depends_on:
+      - redis
+    volumes:
+      - ./agent:/app/agent
+    restart: unless-stopped
+    networks:
+      - recruitment-network
+
+  # Flower - Celery Monitoring UI (Optional)
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: celery-flower
+    command: celery -A agent.celery_app flower --port=5555
+    ports:
+      - "5555:5555"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+      - celery-worker
+    restart: unless-stopped
+    networks:
+      - recruitment-network
+
+# ============================================
+# NETWORKS
+# ============================================
+networks:
+  recruitment-network:
+    driver: bridge
+
+# ============================================
+# VOLUMES
+# ============================================
+volumes:
+  chatwoot-data:
+    driver: local
+  chatwoot-storage:
+    driver: local
+  chatwoot-db-data:
+    driver: local
+  redis-data:
+    driver: local
+
+# ============================================
+# USAGE INSTRUCTIONS
+# ============================================
+# 
+# 1. First Time Setup:
+#    docker-compose -f docker-compose-v4.yml up --build -d
+# 
+# 2. Create Chatwoot Admin Account:
+#    docker-compose -f docker-compose-v4.yml exec chatwoot bundle exec rails runner 'User.create!(email: "admin@yourcompany.com", password: "changeme123", name: "Admin", role: :administrator)'
+# 
+# 3. Access Services:
+#    - API: http://localhost:8000
+#    - Dashboard: http://localhost:3002
+#    - Chatwoot: http://localhost:3000
+#    - Flower (Celery): http://localhost:5555
+# 
+# 4. Stop All Services:
+#    docker-compose -f docker-compose-v4.yml down
+# 
+# 5. Stop & Remove Volumes (DANGER - deletes data):
+#    docker-compose -f docker-compose-v4.yml down -v
+# 
+# 6. View Logs:
+#    docker-compose -f docker-compose-v4.yml logs -f [service-name]
+#    Example: docker-compose -f docker-compose-v4.yml logs -f chatwoot
+# 
+# 7. Restart Single Service:
+#    docker-compose -f docker-compose-v4.yml restart chatwoot
+# 
+# ============================================
+# ENVIRONMENT VARIABLES REQUIRED IN .env
+# ============================================
+# 
+# # AI Models
+# ANTHROPIC_API_KEY=sk-ant-xxx
+# OPENAI_API_KEY=sk-xxx
+# 
+# # Database
+# SUPABASE_URL=https://xxx.supabase.co
+# SUPABASE_SERVICE_KEY=xxx
+# SUPABASE_ANON_KEY=xxx
+# 
+# # WhatsApp
+# THREESIXTY_DIALOG_API_KEY=xxx
+# THREESIXTY_DIALOG_PHONE_NUMBER=+31612345678
+# 
+# # Chatwoot
+# CHATWOOT_SECRET_KEY=xxx  # Generate: openssl rand -hex 64
+# CHATWOOT_DB_PASSWORD=xxx  # Generate: openssl rand -base64 32
+# CHATWOOT_API_TOKEN=xxx  # Get from Chatwoot UI after setup
+# CHATWOOT_ACCOUNT_ID=1  # Usually 1 for first account
+# 
+# ============================================

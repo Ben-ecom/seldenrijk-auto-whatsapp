@@ -1,0 +1,33 @@
+# Environment variables
+.env
+.env.local
+.env.complete
+.env.test
+
+# Documentation with potential secrets
+DAY-3-RAILWAY-DEPLOYMENT-GUIDE.md
+DAY-3-STATUS-AND-INSTRUCTIONS.md
+PHASE1-TWILIO-INTEGRATION-ANALYSIS.md
+TWILIO-DATAFLOW-DIAGRAM.md
+DOCKER-LOCAL-DEMO-GUIDE.md
+QUICK-START-CHECKLIST.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.coverage
+htmlcov/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

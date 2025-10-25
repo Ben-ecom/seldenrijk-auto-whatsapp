@@ -1,0 +1,106 @@
+# ============================================
+# Railway Deployment Configuration
+# Seldenrijk Auto WhatsApp System (Twilio)
+# Version: 1.0.0 - Twilio Migration
+# ============================================
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile.production"
+watchPatterns = ["app/**"]
+
+[deploy]
+startCommand = "bash start.sh"
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
+
+# Minimum number of replicas (for high availability)
+numReplicas = 1
+
+# Sleep during deployment (prevents downtime)
+sleepApplication = false
+
+[services.main]
+# Port configuration
+port = 8000
+
+# Auto-scaling configuration
+[services.main.autoscaling]
+enabled = true
+minReplicas = 1
+maxReplicas = 3
+targetCPUPercent = 80
+targetMemoryPercent = 80
+
+# Health check configuration
+[services.main.healthcheck]
+path = "/health/readiness"
+port = 8000
+intervalSeconds = 30
+timeoutSeconds = 10
+failureThreshold = 3
+successThreshold = 1
+
+# Environment variables from Railway
+[[services.main.env]]
+name = "PORT"
+value = "8000"
+
+[[services.main.env]]
+name = "ENVIRONMENT"
+value = "production"
+
+[[services.main.env]]
+name = "LOG_LEVEL"
+value = "INFO"
+
+[[services.main.env]]
+name = "PYTHONUNBUFFERED"
+value = "1"
+
+# Redis addon configuration
+[addons.redis]
+type = "redis"
+plan = "hobby"
+
+# PostgreSQL addon configuration (if not using Supabase)
+# [addons.postgres]
+# type = "postgres"
+# plan = "hobby"
+
+# Volumes for persistent storage (optional)
+# [volumes.data]
+# mountPath = "/app/data"
+# size = "1GB"
+
+# Build configuration
+[build.env]
+PYTHON_VERSION = "3.11"
+PIP_NO_CACHE_DIR = "1"
+
+# Deployment hooks
+[hooks]
+# Pre-build hook (optional)
+# preBuild = "echo 'Starting build...'"
+
+# Post-build hook (optional)
+# postBuild = "echo 'Build complete!'"
+
+# Pre-deploy hook (run before deployment)
+# preDeploy = "alembic upgrade head"  # Run database migrations
+
+# Post-deploy hook (run after successful deployment)
+# postDeploy = "python scripts/post_deploy.py"
+
+# Railway-specific settings
+[railway]
+# Enable PR environments
+previewEnvironments = true
+
+# Enable automatic deployments on push
+autoDeploy = true
+
+# Branch to deploy from
+branch = "main"

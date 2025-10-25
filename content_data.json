@@ -1,0 +1,139 @@
+{
+  "company_info": {
+    "name": "Seldenrijk Auto",
+    "tagline": "Snel schakelen met onze adviseurs",
+    "highlights": [
+      "Bekijk 450 voertuigen\n\nOf zoek uitgebreid jouw voertuig.",
+      "Groot aanbod van occasions",
+      "Volledige transparantie",
+      "Snel schakelen met onze adviseurs",
+      "Klanten geven ons een 9.2"
+    ],
+    "about": ""
+  },
+  "team_members": [
+    {
+      "role": "Commercieel directeur",
+      "name": "info@seldenrijk.nl"
+    },
+    {
+      "role": "Verkoop adviseur",
+      "name": "info@seldenrijk.nl"
+    },
+    {
+      "role": "Verkoop adviseur",
+      "name": "info@seldenrijk.nl"
+    },
+    {
+      "role": "Verkoopadviseur",
+      "name": "info@seldenrijk.nl"
+    },
+    {
+      "role": "Verkoop adviseur",
+      "name": "info@seldenrijk.nl"
+    },
+    {
+      "role": "Verkoop adviseur",
+      "name": "info@seldenrijk.nl"
+    },
+    {
+      "role": "Verkoop adviseur",
+      "name": "info@seldenrijk.nl"
+    },
+    {
+      "role": "Verkoop adviseur",
+      "name": "info@seldenrijk.nl"
+    },
+    {
+      "role": "Verkoop adviseur",
+      "name": "info@seldenrijk.nl"
+    },
+    {
+      "role": "Verkoop adviseur",
+      "name": "info@seldenrijk.nl"
+    },
+    {
+      "role": "Verkoop adviseur",
+      "name": "info@seldenrijk.nl"
+    },
+    {
+      "role": "Inkoopmanager",
+      "name": "info@seldenrijk.nl"
+    },
+    {
+      "role": "Inkoop medewerker",
+      "name": "info@seldenrijk.nl"
+    },
+    {
+      "role": "Operationeel medewerker",
+      "name": "info@seldenrijk.nl"
+    },
+    {
+      "role": "Operationeel medewerker",
+      "name": "info@seldenrijk.nl"
+    },
+    {
+      "role": "Operationeel medewerker",
+      "name": "info@seldenrijk.nl"
+    },
+    {
+      "role": "Operationeel medewerker",
+      "name": "info@seldenrijk.nl"
+    },
+    {
+      "role": "Operationeel medewerker",
+      "name": "info@seldenrijk.nl"
+    },
+    {
+      "role": "Operationeel medewerker",
+      "name": "info@seldenrijk.nl"
+    },
+    {
+      "role": "Operationeel medewerker",
+      "name": "info@seldenrijk.nl"
+    },
+    {
+      "role": "Operationeel medewerker",
+      "name": "info@seldenrijk.nl"
+    },
+    {
+      "role": "Technische medewerker",
+      "name": "info@seldenrijk.nl"
+    },
+    {
+      "role": "Technische medewerker",
+      "name": "info@seldenrijk.nl"
+    },
+    {
+      "role": "Technische medewerker",
+      "name": "info@seldenrijk.nl"
+    }
+  ],
+  "financing": {
+    "available": true,
+    "options": [],
+    "description": "",
+    "partners": []
+  },
+  "contact": {
+    "address": {
+      "street": "Zuiderbreedte 22",
+      "postal_code": "3845MC",
+      "city": "Harderwijk",
+      "country": "Nederland"
+    },
+    "phone": "08094846",
+    "email": "info@seldenrijk.nl",
+    "whatsapp": "0341-799554",
+    "opening_hours": {
+      "monday": "09:00-18:00",
+      "tuesday": "09:00-18:00",
+      "wednesday": "09:00-18:00",
+      "thursday": "09:00-18:00",
+      "friday": "09:00-18:00",
+      "saturday": "09:00-17:00",
+      "sunday": "Gesloten"
+    }
+  },
+  "scraped_at": "2025-10-17T20:54:09.603659"
+}

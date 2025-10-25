@@ -1,0 +1,3027 @@
+# 📋 IMPLEMENTATION ROADMAP v5.1
+## Chatwoot-Centric WhatsApp Recruitment Platform
+
+**Version**: 1.0
+**Target Duration**: 8 weeks (solo developer)
+**Architecture**: Chatwoot + LangGraph + 4 Agents
+**PRD Reference**: PRD-V5.1-CHATWOOT-CENTRIC.md
+
+---
+
+## 📊 TIMELINE OVERVIEW
+
+### Gantt Chart (8 Weeks)
+```
+Week | Foundation | Agents | RAG | CRM | Production | White-Label | Testing | Deploy |
+-----|------------|--------|-----|-----|------------|-------------|---------|--------|
+W1   |████████████|        |     |     |            |             |         |        |
+W2   |████████████|        |     |     |            |             |         |        |
+W3   |            |████████|     |     |            |             |         |        |
+W4   |            |████████|     |     |            |             |         |        |
+W5   |            |        |█████|     |            |             |         |        |
+W6   |            |        |     |█████|            |             |         |        |
+W7   |            |        |     |     |████████████|             |         |        |
+W8   |            |        |     |     |            |█████████████|█████████|████████|
+```
+
+### Milestones Table
+| Week | Milestone | Deliverables | Success Criteria |
+|------|-----------|--------------|------------------|
+| 1-2 | Foundation Setup | Chatwoot deployed, WhatsApp MCP working, FastAPI webhook | Echo bot works end-to-end |
+| 3-4 | LangGraph + Agents | 4 agents implemented, state machine working | Full conversation flow with CRM updates |
+| 5 | Agentic RAG | Vector DB populated, tool calling working | Agent autonomously searches knowledge base |
+| 6 | CRM Integration | Custom attributes, labels, human takeover | Full CRM profile with AI summaries |
+| 7 | Production Services | 360Dialog, ScrapeCreators import, rate limiting | Production WhatsApp, lead import working |
+| 8 | Launch | White-label branding, testing, deployment | System live with client branding |
+
+### Critical Path
+```
+Foundation (W1-2)
+    → LangGraph Setup (W3)
+    → Agents Implementation (W3-4)
+    → Agentic RAG (W5)
+    → CRM Integration (W6)
+    → Production Services (W7)
+    → Testing & Deploy (W8)
+```
+
+---
+
+## 🗓️ WEEK 1-2: FOUNDATION SETUP
+
+### Goals
+- Deploy Chatwoot on Railway
+- Setup WhatsApp MCP for development testing
+- Implement FastAPI webhook receiver
+- Create basic echo bot (WhatsApp → Chatwoot → FastAPI → WhatsApp)
+
+### Technical Tasks
+
+#### Day 1-2: Chatwoot Deployment
+**Task 1.1: Railway Project Setup**
+```bash
+# Clone Chatwoot
+git clone https://github.com/chatwoot/chatwoot.git
+cd chatwoot
+
+# Create Railway project
+railway login
+railway init
+railway link
+
+# Add PostgreSQL and Redis
+railway add --plugin postgresql
+railway add --plugin redis
+```
+
+**Task 1.2: Environment Configuration**
+```bash
+# Create .env file
+cat > .env << EOF
+# Chatwoot Core
+RAILS_ENV=production
+SECRET_KEY_BASE=$(openssl rand -hex 64)
+
+# Database (Railway auto-provided)
+DATABASE_URL=postgresql://user:pass@host:5432/chatwoot_production
+REDIS_URL=redis://host:6379
+
+# Chatwoot Config
+FRONTEND_URL=https://your-app.railway.app
+FORCE_SSL=true
+ENABLE_ACCOUNT_SIGNUP=false
+
+# Storage (for media files)
+ACTIVE_STORAGE_SERVICE=local
+
+# Branding (White-label prep)
+BRAND_NAME=RecruitmentCRM
+LOGO_THUMBNAIL=https://yourcompany.com/logo-small.png
+LOGO=https://yourcompany.com/logo-large.png
+WIDGET_BRAND_URL=
+EOF
+```
+
+**Task 1.3: Deploy to Railway**
+```bash
+# Build and deploy
+railway up
+
+# Run migrations
+railway run rails db:create
+railway run rails db:migrate
+railway run rails db:seed
+
+# Create super admin
+railway run rails runner "User.create!(email: 'admin@example.com', password: 'password', role: :administrator)"
+```
+
+**Testing Checklist**:
+- [ ] Chatwoot UI accessible at Railway URL
+- [ ] Can login with admin credentials
+- [ ] Dashboard loads without errors
+- [ ] PostgreSQL connected
+- [ ] Redis connected
+
+---
+
+#### Day 3-4: WhatsApp MCP Integration (Development)
+**Task 2.1: Install WhatsApp MCP**
+```bash
+# Install MCP CLI
+npm install -g @modelcontextprotocol/cli
+
+# Install WhatsApp MCP server
+npm install -g @chatwoot/whatsapp-mcp-server
+
+# Or clone from repo
+git clone https://github.com/chatwoot/whatsapp-mcp-server.git
+cd whatsapp-mcp-server
+npm install
+npm run build
+```
+
+**Task 2.2: Configure WhatsApp Inbox in Chatwoot**
+```bash
+# 1. Login to Chatwoot
+# 2. Navigate to: Settings → Inboxes → Add Inbox
+# 3. Select: WhatsApp
+# 4. Choose: WhatsApp Cloud (MCP Server)
+# 5. Configure:
+#    - Phone Number: +31612345678 (your test number)
+#    - Webhook URL: https://your-app.railway.app/webhooks/whatsapp
+#    - API Key: (auto-generated by Chatwoot)
+```
+
+**Task 2.3: Start WhatsApp MCP Server**
+```javascript
+// whatsapp-mcp-config.json
+{
+  "mcpServers": {
+    "whatsapp": {
+      "command": "npx",
+      "args": ["-y", "@chatwoot/whatsapp-mcp-server"],
+      "env": {
+        "WHATSAPP_PHONE_NUMBER": "+31612345678",
+        "CHATWOOT_WEBHOOK_URL": "https://your-app.railway.app/webhooks/whatsapp",
+        "CHATWOOT_API_TOKEN": "your_chatwoot_api_token"
+      }
+    }
+  }
+}
+```
+
+```bash
+# Start MCP server
+npx @modelcontextprotocol/cli run whatsapp-mcp-config.json
+```
+
+**Testing Checklist**:
+- [ ] MCP server running without errors
+- [ ] WhatsApp inbox appears in Chatwoot
+- [ ] Can send test message from phone
+- [ ] Message appears in Chatwoot inbox
+- [ ] Agent reply sent to phone
+
+---
+
+#### Day 5-7: FastAPI Webhook Receiver
+**Task 3.1: Project Setup**
+```bash
+# Create project structure
+mkdir chatwoot-webhook-service
+cd chatwoot-webhook-service
+
+# Initialize Python environment
+python3 -m venv venv
+source venv/bin/activate
+
+# Install dependencies
+pip install fastapi uvicorn httpx pydantic pydantic-settings python-dotenv
+pip freeze > requirements.txt
+```
+
+**Task 3.2: FastAPI Application**
+```python
+# main.py
+from fastapi import FastAPI, Request, HTTPException
+from pydantic import BaseModel
+from typing import Optional, Literal
+import httpx
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+app = FastAPI(title="Chatwoot Webhook Service")
+
+# Environment variables
+CHATWOOT_URL = os.getenv("CHATWOOT_URL")
+CHATWOOT_API_TOKEN = os.getenv("CHATWOOT_API_TOKEN")
+CHATWOOT_ACCOUNT_ID = os.getenv("CHATWOOT_ACCOUNT_ID")
+
+# Pydantic models
+class ChatwootMessage(BaseModel):
+    id: int
+    content: str
+    message_type: Literal["incoming", "outgoing"]
+    created_at: int
+    conversation_id: int
+    sender: dict
+    contact_id: int
+
+class ChatwootWebhookPayload(BaseModel):
+    event: str
+    account_id: int
+    id: int
+    message: Optional[ChatwootMessage] = None
+    conversation: Optional[dict] = None
+
+@app.get("/")
+async def root():
+    return {"status": "Chatwoot Webhook Service Running", "version": "1.0"}
+
+@app.post("/webhooks/chatwoot")
+async def chatwoot_webhook(payload: ChatwootWebhookPayload):
+    """
+    Receive Chatwoot webhooks and process messages.
+
+    Events:
+    - message_created: New message from user
+    - conversation_created: New conversation started
+    - conversation_status_changed: Status updated
+    """
+
+    print(f"📩 Received event: {payload.event}")
+
+    # Only process incoming messages
+    if payload.event == "message_created" and payload.message:
+        message = payload.message
+
+        # Skip outgoing messages (from agent/bot)
+        if message.message_type == "outgoing":
+            print("⏭️ Skipping outgoing message")
+            return {"status": "skipped"}
+
+        print(f"💬 Processing message: {message.content}")
+
+        # Echo bot: Reply with same message
+        response = await send_message_to_chatwoot(
+            conversation_id=message.conversation_id,
+            content=f"Echo: {message.content}"
+        )
+
+        return {"status": "processed", "response": response}
+
+    return {"status": "ignored"}
+
+async def send_message_to_chatwoot(conversation_id: int, content: str):
+    """Send message back to Chatwoot (which forwards to WhatsApp)"""
+
+    url = f"{CHATWOOT_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages"
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            url,
+            headers={"api_access_token": CHATWOOT_API_TOKEN},
+            json={
+                "content": content,
+                "message_type": "outgoing",
+                "private": False
+            }
+        )
+
+        if response.status_code != 200:
+            raise HTTPException(500, f"Failed to send message: {response.text}")
+
+        return response.json()
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for Railway"""
+    return {"status": "healthy"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+```
+
+**Task 3.3: Environment File**
+```bash
+# .env
+CHATWOOT_URL=https://your-app.railway.app
+CHATWOOT_API_TOKEN=your_api_token_here
+CHATWOOT_ACCOUNT_ID=1
+```
+
+**Task 3.4: Deploy FastAPI to Railway**
+```bash
+# Create Dockerfile
+cat > Dockerfile << EOF
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+EXPOSE 8000
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+EOF
+
+# Deploy to Railway
+railway init
+railway link
+railway up
+```
+
+**Task 3.5: Configure Chatwoot Webhook**
+```bash
+# In Chatwoot UI:
+# Settings → Webhooks → Add Webhook
+# URL: https://your-fastapi.railway.app/webhooks/chatwoot
+# Events: message_created, conversation_created
+# Save
+```
+
+**Testing Checklist**:
+- [ ] FastAPI running at Railway URL
+- [ ] `/health` endpoint returns 200
+- [ ] Send WhatsApp message
+- [ ] FastAPI receives webhook
+- [ ] Echo response sent back
+- [ ] User receives echo on WhatsApp
+
+---
+
+#### Day 8-10: Supabase PGVector Setup
+**Task 4.1: Create Supabase Project**
+```bash
+# 1. Go to https://supabase.com
+# 2. Create new project
+# 3. Note down:
+#    - Project URL
+#    - API Key (anon public)
+#    - Service Role Key (secret)
+#    - Database Password
+```
+
+**Task 4.2: Enable PGVector Extension**
+```sql
+-- In Supabase SQL Editor
+CREATE EXTENSION IF NOT EXISTS vector;
+```
+
+**Task 4.3: Create Documents Table**
+```sql
+-- documents table for RAG knowledge base
+CREATE TABLE documents (
+    id SERIAL PRIMARY KEY,
+    content TEXT NOT NULL,
+    embedding VECTOR(1536),  -- OpenAI text-embedding-3-small
+    metadata JSONB,
+    category VARCHAR(50),
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Index for fast similarity search
+CREATE INDEX ON documents
+USING ivfflat (embedding vector_cosine_ops)
+WITH (lists = 100);
+
+-- Function for vector similarity search
+CREATE OR REPLACE FUNCTION match_documents(
+    query_embedding VECTOR(1536),
+    match_threshold FLOAT DEFAULT 0.7,
+    match_count INT DEFAULT 5,
+    filter_category VARCHAR DEFAULT NULL
+)
+RETURNS TABLE (
+    id INT,
+    content TEXT,
+    metadata JSONB,
+    category VARCHAR,
+    similarity FLOAT
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        documents.id,
+        documents.content,
+        documents.metadata,
+        documents.category,
+        1 - (documents.embedding <=> query_embedding) AS similarity
+    FROM documents
+    WHERE
+        (filter_category IS NULL OR documents.category = filter_category)
+        AND 1 - (documents.embedding <=> query_embedding) > match_threshold
+    ORDER BY similarity DESC
+    LIMIT match_count;
+END;
+$$;
+```
+
+**Task 4.4: Python Client Setup**
+```python
+# supabase_client.py
+from supabase import create_client, Client
+import os
+from typing import List, Dict, Optional
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+async def insert_document(
+    content: str,
+    embedding: List[float],
+    metadata: Dict,
+    category: str
+) -> Dict:
+    """Insert document with embedding into Supabase"""
+
+    response = supabase.table("documents").insert({
+        "content": content,
+        "embedding": embedding,
+        "metadata": metadata,
+        "category": category
+    }).execute()
+
+    return response.data[0]
+
+async def search_documents(
+    query_embedding: List[float],
+    match_threshold: float = 0.7,
+    match_count: int = 5,
+    category: Optional[str] = None
+) -> List[Dict]:
+    """Search for similar documents using vector search"""
+
+    response = supabase.rpc(
+        "match_documents",
+        {
+            "query_embedding": query_embedding,
+            "match_threshold": match_threshold,
+            "match_count": match_count,
+            "filter_category": category
+        }
+    ).execute()
+
+    return response.data
+```
+
+**Testing Checklist**:
+- [ ] Supabase project created
+- [ ] PGVector extension enabled
+- [ ] Documents table created
+- [ ] Can insert test document
+- [ ] Can run similarity search
+- [ ] Python client connects successfully
+
+---
+
+### Week 1-2 Deliverables
+- ✅ Chatwoot deployed and accessible
+- ✅ WhatsApp MCP working (development mode)
+- ✅ FastAPI webhook receiving Chatwoot events
+- ✅ Echo bot working end-to-end
+- ✅ Supabase PGVector configured
+- ✅ Docker Compose local environment
+
+### Testing Checklist (Week 1-2)
+```bash
+# End-to-End Test
+1. Send WhatsApp message: "Hello"
+2. Message appears in Chatwoot inbox
+3. FastAPI logs show webhook received
+4. Echo response: "Echo: Hello"
+5. User receives response on WhatsApp
+
+✅ PASS: Foundation working correctly
+```
+
+---
+
+## 🗓️ WEEK 3-4: LANGGRAPH + 4 AGENTS
+
+### Goals
+- Implement LangGraph state machine
+- Create 4 agents: Router, Extraction, Conversation, CRM
+- End-to-end conversation flow with CRM updates
+
+### Technical Tasks
+
+#### Day 1-3: LangGraph Setup
+**Task 5.1: Install Dependencies**
+```bash
+pip install langgraph==0.2.62
+pip install langchain==0.3.14
+pip install langchain-openai==0.2.14
+pip install langchain-anthropic==0.3.7
+pip install pydantic-ai>=0.0.14
+pip install openai==1.59.5
+pip install anthropic==0.42.0
+```
+
+**Task 5.2: State Definition**
+```python
+# state.py
+from typing import TypedDict, Literal, Optional, List, Dict
+from pydantic import BaseModel
+
+class ConversationState(TypedDict):
+    """LangGraph state for conversation flow"""
+
+    # Chatwoot context
+    message_id: str
+    conversation_id: str
+    contact_id: str
+    account_id: str
+    channel: Literal["whatsapp", "instagram", "email", "telegram"]
+
+    # Message content
+    message_content: str
+    message_type: Literal["incoming", "outgoing"]
+
+    # Agent outputs
+    intent: Optional[str]
+    priority: Optional[Literal["high", "medium", "low"]]
+    sentiment: Optional[float]  # -1.0 to 1.0
+
+    extracted_data: Optional[Dict]  # From Extraction Agent
+    rag_results: Optional[List[Dict]]  # From Agentic RAG
+    agent_response: Optional[str]  # From Conversation Agent
+
+    # Routing
+    needs_human: bool
+    route: Optional[Literal["automated", "human", "hybrid"]]
+
+    # Context
+    contact_profile: Optional[Dict]
+    conversation_history: Optional[List[Dict]]
+
+    # Error handling
+    error: Optional[str]
+    retry_count: int
+
+class ExtractedData(BaseModel):
+    """Structured data extracted by Pydantic AI"""
+    name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    budget_min: Optional[int] = None
+    budget_max: Optional[int] = None
+    job_type: Optional[Literal["interim", "permanent", "freelance"]] = None
+    urgency: Literal["high", "medium", "low"] = "medium"
+    intent: str
+    key_phrases: List[str] = []
+```
+
+**Task 5.3: Graph Definition**
+```python
+# graph.py
+from langgraph.graph import StateGraph, END, START
+from state import ConversationState
+from agents import (
+    router_agent_node,
+    extraction_agent_node,
+    conversation_agent_node,
+    crm_agent_node
+)
+
+def create_conversation_graph():
+    """Create LangGraph conversation workflow"""
+
+    # Initialize graph
+    graph = StateGraph(ConversationState)
+
+    # Add nodes (agents)
+    graph.add_node("router", router_agent_node)
+    graph.add_node("extraction", extraction_agent_node)
+    graph.add_node("conversation", conversation_agent_node)
+    graph.add_node("crm", crm_agent_node)
+
+    # Add edges
+    graph.add_edge(START, "router")
+    graph.add_edge("router", "extraction")
+
+    # Conditional edge: Check if human needed
+    def should_route_to_human(state: ConversationState) -> str:
+        """Decide if human takeover needed"""
+
+        # High priority or complaint
+        if state.get("priority") == "high":
+            state["needs_human"] = True
+            state["route"] = "human"
+            return END
+
+        # Negative sentiment
+        if state.get("sentiment", 0) < -0.5:
+            state["needs_human"] = True
+            state["route"] = "human"
+            return END
+
+        # Complex intent
+        complex_intents = ["complaint", "refund", "escalation"]
+        if state.get("intent") in complex_intents:
+            state["needs_human"] = True
+            state["route"] = "human"
+            return END
+
+        # Continue to conversation agent
+        state["needs_human"] = False
+        state["route"] = "automated"
+        return "conversation"
+
+    graph.add_conditional_edges(
+        "extraction",
+        should_route_to_human,
+        {
+            "conversation": "conversation",
+            END: END
+        }
+    )
+
+    graph.add_edge("conversation", "crm")
+    graph.add_edge("crm", END)
+
+    # Compile
+    app = graph.compile()
+
+    return app
+
+# Create singleton instance
+conversation_app = create_conversation_graph()
+```
+
+**Testing Checklist**:
+- [ ] LangGraph imports successfully
+- [ ] State definition valid
+- [ ] Graph compiles without errors
+- [ ] Can visualize graph (optional)
+
+---
+
+#### Day 4-6: Agent 1 - Router Agent
+**Task 6.1: Router Implementation**
+```python
+# agents/router_agent.py
+from openai import AsyncOpenAI
+from state import ConversationState
+import os
+
+client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+ROUTER_SYSTEM_PROMPT = """You are a routing agent. Classify the user's message intent.
+
+Categories:
+- product_inquiry: Questions about products/services
+- policy_question: Return policy, terms, FAQ
+- support_request: Help with issues, complaints
+- job_search: Looking for jobs, vacancies (recruitment use case)
+- general: Greetings, chitchat
+- qualification: Lead qualification questions
+- complaint: Negative feedback, complaints
+- order_status: Tracking, order updates
+
+Output format (JSON):
+{
+    "intent": "category_name",
+    "priority": "high|medium|low",
+    "sentiment": 0.5,
+    "confidence": 0.9
+}
+
+Priority rules:
+- high: Complaints, urgent requests, refunds
+- medium: Product inquiries, support requests
+- low: General chitchat, greetings
+
+Sentiment: -1.0 (very negative) to 1.0 (very positive)
+"""
+
+async def router_agent_node(state: ConversationState) -> ConversationState:
+    """
+    Router Agent: Classify message intent and priority
+    Model: GPT-4o-mini (fast + cheap)
+    """
+
+    print(f"🔀 Router Agent processing: {state['message_content'][:50]}...")
+
+    try:
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
+                {"role": "user", "content": state["message_content"]}
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.3
+        )
+
+        result = response.choices[0].message.content
+        import json
+        parsed = json.loads(result)
+
+        # Update state
+        state["intent"] = parsed.get("intent", "general")
+        state["priority"] = parsed.get("priority", "medium")
+        state["sentiment"] = parsed.get("sentiment", 0.0)
+
+        print(f"✅ Routed: intent={state['intent']}, priority={state['priority']}")
+
+    except Exception as e:
+        print(f"❌ Router error: {e}")
+        state["error"] = str(e)
+        state["intent"] = "general"
+        state["priority"] = "medium"
+
+    return state
+```
+
+**Testing**:
+```python
+# test_router.py
+import asyncio
+from agents.router_agent import router_agent_node
+from state import ConversationState
+
+async def test_router():
+    test_cases = [
+        "I want to return my order #123",  # Expected: complaint, high
+        "What's your return policy?",      # Expected: policy_question, medium
+        "Hello!",                           # Expected: general, low
+        "Looking for tech jobs",            # Expected: job_search, medium
+    ]
+
+    for message in test_cases:
+        state: ConversationState = {
+            "message_content": message,
+            "message_id": "test",
+            "conversation_id": "test",
+            "contact_id": "test",
+            "account_id": "1",
+            "channel": "whatsapp",
+            "message_type": "incoming",
+            "needs_human": False,
+            "retry_count": 0
+        }
+
+        result = await router_agent_node(state)
+        print(f"\nMessage: {message}")
+        print(f"Intent: {result['intent']}")
+        print(f"Priority: {result['priority']}")
+        print(f"Sentiment: {result['sentiment']}")
+
+asyncio.run(test_router())
+```
+
+---
+
+#### Day 7-9: Agent 2 - Extraction Agent
+**Task 7.1: Pydantic AI Implementation**
+```python
+# agents/extraction_agent.py
+from pydantic_ai import Agent
+from state import ConversationState, ExtractedData
+import os
+
+EXTRACTION_SYSTEM_PROMPT = """Extract structured contact and lead data from conversations.
+
+Rules:
+- Extract name if mentioned
+- Extract email if provided
+- Extract phone if provided
+- Detect budget range (min/max)
+- Identify job type preference (interim, permanent, freelance)
+- Determine urgency level (high, medium, low)
+- Extract key phrases for CRM
+- Classify intent
+
+If information not present, return None for that field.
+"""
+
+# Initialize Pydantic AI agent
+extraction_agent = Agent(
+    'openai:gpt-4o-mini',
+    result_type=ExtractedData,
+    system_prompt=EXTRACTION_SYSTEM_PROMPT
+)
+
+async def extraction_agent_node(state: ConversationState) -> ConversationState:
+    """
+    Extraction Agent: Extract structured data using Pydantic AI
+    Model: GPT-4o-mini with Pydantic validation
+    """
+
+    print(f"📊 Extraction Agent processing: {state['message_content'][:50]}...")
+
+    try:
+        # Run Pydantic AI agent
+        result = await extraction_agent.run(state["message_content"])
+
+        # result.data is already validated ExtractedData instance!
+        extracted = result.data
+
+        # Convert to dict for state
+        state["extracted_data"] = extracted.model_dump()
+
+        print(f"✅ Extracted: {extracted.model_dump()}")
+
+    except Exception as e:
+        print(f"❌ Extraction error: {e}")
+        state["error"] = str(e)
+        state["extracted_data"] = None
+
+    return state
+```
+
+**Testing**:
+```python
+# test_extraction.py
+import asyncio
+from agents.extraction_agent import extraction_agent_node
+from state import ConversationState
+
+async def test_extraction():
+    test_cases = [
+        "Hi, I'm John Doe. Looking for interim roles, budget €70-90k",
+        "My email is john@example.com, phone +31612345678",
+        "Need urgent freelance work, budget around €5000",
+    ]
+
+    for message in test_cases:
+        state: ConversationState = {
+            "message_content": message,
+            "message_id": "test",
+            "conversation_id": "test",
+            "contact_id": "test",
+            "account_id": "1",
+            "channel": "whatsapp",
+            "message_type": "incoming",
+            "needs_human": False,
+            "retry_count": 0,
+            "intent": "job_search",
+            "priority": "medium"
+        }
+
+        result = await extraction_agent_node(state)
+        print(f"\nMessage: {message}")
+        print(f"Extracted: {result['extracted_data']}")
+
+asyncio.run(test_extraction())
+```
+
+---
+
+#### Day 10-12: Agent 3 - Conversation Agent (Basic)
+**Task 8.1: Conversation Agent (Without RAG)**
+```python
+# agents/conversation_agent.py
+from anthropic import AsyncAnthropic
+from state import ConversationState
+import os
+
+client = AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+
+CONVERSATION_SYSTEM_PROMPT = """You are a helpful recruitment assistant.
+
+Your role:
+- Answer questions about job opportunities
+- Qualify leads for recruitment services
+- Provide information about available positions
+- Be professional, friendly, and concise
+
+Guidelines:
+- Keep responses under 200 words
+- Ask clarifying questions when needed
+- If you don't know, say so politely
+- Encourage contact information exchange
+
+Context will be provided for each conversation.
+"""
+
+async def conversation_agent_node(state: ConversationState) -> ConversationState:
+    """
+    Conversation Agent: Generate responses using Claude
+    Model: Claude 3.5 Sonnet (without Agentic RAG for now)
+    """
+
+    print(f"💬 Conversation Agent processing: {state['message_content'][:50]}...")
+
+    try:
+        # Build context from state
+        context = f"""
+User message: {state['message_content']}
+Intent: {state.get('intent', 'unknown')}
+Priority: {state.get('priority', 'medium')}
+Extracted data: {state.get('extracted_data', {})}
+        """
+
+        # Call Claude
+        response = await client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=1024,
+            system=CONVERSATION_SYSTEM_PROMPT,
+            messages=[
+                {"role": "user", "content": context}
+            ]
+        )
+
+        # Extract response text
+        agent_response = response.content[0].text
+        state["agent_response"] = agent_response
+
+        print(f"✅ Response generated: {agent_response[:100]}...")
+
+    except Exception as e:
+        print(f"❌ Conversation error: {e}")
+        state["error"] = str(e)
+        state["agent_response"] = "I apologize, I'm having trouble processing your request. A human agent will assist you shortly."
+        state["needs_human"] = True
+
+    return state
+```
+
+**Note**: Agentic RAG will be added in Week 5
+
+---
+
+#### Day 13-14: Agent 4 - CRM Agent
+**Task 9.1: CRM Update Implementation**
+```python
+# agents/crm_agent.py
+from state import ConversationState
+import httpx
+import os
+
+CHATWOOT_URL = os.getenv("CHATWOOT_URL")
+CHATWOOT_API_TOKEN = os.getenv("CHATWOOT_API_TOKEN")
+CHATWOOT_ACCOUNT_ID = os.getenv("CHATWOOT_ACCOUNT_ID")
+
+async def crm_agent_node(state: ConversationState) -> ConversationState:
+    """
+    CRM Agent: Update Chatwoot contact with extracted data
+    """
+
+    print(f"📝 CRM Agent updating contact: {state['contact_id']}...")
+
+    try:
+        contact_id = state["contact_id"]
+        extracted = state.get("extracted_data", {})
+
+        # Build custom attributes
+        custom_attributes = {}
+
+        if extracted:
+            if extracted.get("name"):
+                custom_attributes["extracted_name"] = extracted["name"]
+
+            if extracted.get("email"):
+                custom_attributes["extracted_email"] = extracted["email"]
+
+            if extracted.get("phone"):
+                custom_attributes["extracted_phone"] = extracted["phone"]
+
+            if extracted.get("budget_min") and extracted.get("budget_max"):
+                custom_attributes["budget_range"] = f"€{extracted['budget_min']}-{extracted['budget_max']}"
+
+            if extracted.get("job_type"):
+                custom_attributes["job_type_preference"] = extracted["job_type"]
+
+            if extracted.get("urgency"):
+                custom_attributes["urgency_level"] = extracted["urgency"]
+
+        # Add AI metadata
+        custom_attributes["last_intent"] = state.get("intent", "unknown")
+        custom_attributes["last_priority"] = state.get("priority", "medium")
+        custom_attributes["last_sentiment"] = state.get("sentiment", 0.0)
+        custom_attributes["ai_last_updated"] = "2025-01-15"  # Use datetime.now()
+
+        # Generate AI summary (simple version)
+        if state.get("agent_response"):
+            custom_attributes["ai_summary"] = state["agent_response"][:200]
+
+        # Update contact via Chatwoot API
+        url = f"{CHATWOOT_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts/{contact_id}"
+
+        async with httpx.AsyncClient() as client:
+            response = await client.put(
+                url,
+                headers={"api_access_token": CHATWOOT_API_TOKEN},
+                json={"custom_attributes": custom_attributes}
+            )
+
+            if response.status_code == 200:
+                print(f"✅ Contact updated successfully")
+                state["crm_updated"] = True
+            else:
+                print(f"⚠️ CRM update failed: {response.status_code}")
+                state["crm_updated"] = False
+
+        # Add labels based on intent/priority
+        labels = []
+        if state.get("priority") == "high":
+            labels.append("high-priority")
+        if state.get("intent") == "job_search":
+            labels.append("job-seeker")
+        if extracted and extracted.get("budget_min", 0) > 70000:
+            labels.append("high-value-lead")
+
+        if labels:
+            await update_contact_labels(contact_id, labels)
+
+    except Exception as e:
+        print(f"❌ CRM error: {e}")
+        state["error"] = str(e)
+        state["crm_updated"] = False
+
+    return state
+
+async def update_contact_labels(contact_id: str, labels: list):
+    """Add labels to Chatwoot contact"""
+
+    url = f"{CHATWOOT_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts/{contact_id}/labels"
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            url,
+            headers={"api_access_token": CHATWOOT_API_TOKEN},
+            json={"labels": labels}
+        )
+
+        if response.status_code == 200:
+            print(f"✅ Labels added: {labels}")
+```
+
+---
+
+#### Day 15-16: Integration & Testing
+**Task 10.1: Update FastAPI Webhook to Use LangGraph**
+```python
+# main.py (updated)
+from fastapi import FastAPI, Request, HTTPException
+from graph import conversation_app
+from state import ConversationState
+import httpx
+import os
+
+app = FastAPI(title="Chatwoot Webhook Service")
+
+@app.post("/webhooks/chatwoot")
+async def chatwoot_webhook(payload: dict):
+    """Process Chatwoot webhooks using LangGraph"""
+
+    print(f"📩 Received event: {payload.get('event')}")
+
+    if payload.get("event") == "message_created":
+        message = payload.get("message", {})
+
+        # Skip outgoing messages
+        if message.get("message_type") == "outgoing":
+            return {"status": "skipped"}
+
+        # Build initial state
+        initial_state: ConversationState = {
+            "message_id": str(message.get("id")),
+            "conversation_id": str(message.get("conversation_id")),
+            "contact_id": str(message.get("sender", {}).get("id")),
+            "account_id": str(payload.get("account", {}).get("id")),
+            "channel": "whatsapp",  # TODO: detect from inbox
+            "message_content": message.get("content", ""),
+            "message_type": "incoming",
+            "needs_human": False,
+            "retry_count": 0,
+            "contact_profile": None,
+            "conversation_history": None
+        }
+
+        # Run LangGraph workflow
+        print("🚀 Starting LangGraph workflow...")
+        result = await conversation_app.ainvoke(initial_state)
+
+        # Check if human needed
+        if result.get("needs_human"):
+            print("👤 Human takeover required - skipping automated response")
+
+            # TODO: Notify human agent via Chatwoot
+
+            return {"status": "human_takeover_required", "reason": result.get("intent")}
+
+        # Send automated response
+        if result.get("agent_response"):
+            await send_message_to_chatwoot(
+                conversation_id=int(result["conversation_id"]),
+                content=result["agent_response"]
+            )
+
+            return {"status": "processed", "response": result["agent_response"][:100]}
+
+    return {"status": "ignored"}
+
+async def send_message_to_chatwoot(conversation_id: int, content: str):
+    """Send message back to Chatwoot"""
+
+    url = f"{os.getenv('CHATWOOT_URL')}/api/v1/accounts/{os.getenv('CHATWOOT_ACCOUNT_ID')}/conversations/{conversation_id}/messages"
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            url,
+            headers={"api_access_token": os.getenv("CHATWOOT_API_TOKEN")},
+            json={
+                "content": content,
+                "message_type": "outgoing",
+                "private": False
+            }
+        )
+
+        if response.status_code != 200:
+            raise HTTPException(500, f"Failed to send message: {response.text}")
+```
+
+**Testing Checklist**:
+- [ ] Send test message: "Hi, I'm John looking for jobs"
+- [ ] Router classifies as "job_search"
+- [ ] Extraction captures name "John"
+- [ ] Conversation generates response
+- [ ] CRM updates contact in Chatwoot
+- [ ] User receives response on WhatsApp
+- [ ] Chatwoot contact shows custom attributes
+
+---
+
+### Week 3-4 Deliverables
+- ✅ LangGraph state machine working
+- ✅ 4 agents implemented and tested
+- ✅ End-to-end conversation flow
+- ✅ CRM updates persisting in Chatwoot
+- ✅ Human takeover logic working
+
+### Testing Checklist (Week 3-4)
+```bash
+# Test Scenarios:
+1. General inquiry → Automated response
+2. High priority complaint → Human takeover
+3. Job search with budget → Data extracted, CRM updated
+4. Negative sentiment → Human takeover
+
+✅ PASS: All agents working in LangGraph workflow
+```
+
+---
+
+## 🗓️ WEEK 5: AGENTIC RAG IMPLEMENTATION
+
+### Goals
+- Populate knowledge base with documents
+- Implement vector embeddings
+- Add tool calling to Conversation Agent
+- Agent autonomously searches when needed
+
+### Technical Tasks
+
+#### Day 1-2: Knowledge Base Population
+**Task 11.1: Document Ingestion Script**
+```python
+# scripts/ingest_documents.py
+from openai import AsyncOpenAI
+from supabase_client import insert_document
+import asyncio
+from typing import List
+import os
+
+client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+SAMPLE_DOCUMENTS = [
+    {
+        "content": """
+        Return Policy: Customers can return products within 30 days of purchase.
+        Items must be unused and in original packaging. Refunds are processed within 5-7 business days.
+        Shipping costs are non-refundable unless the return is due to our error.
+        """,
+        "category": "policy",
+        "metadata": {"title": "Return Policy", "source": "company_handbook.pdf", "page": 15}
+    },
+    {
+        "content": """
+        Current Job Openings:
+        1. Senior Python Developer - Amsterdam - €70-90k - Interim (6 months)
+        2. DevOps Engineer - Rotterdam - €65-85k - Permanent
+        3. Data Scientist - Utrecht - €75-95k - Freelance
+
+        Requirements: 5+ years experience, Dutch speaking preferred.
+        """,
+        "category": "product",
+        "metadata": {"title": "Job Vacancies", "source": "vacancies_database", "updated": "2025-01-15"}
+    },
+    {
+        "content": """
+        FAQ: How long does hiring take?
+
+        Answer: Our typical hiring process takes 2-3 weeks:
+        - Week 1: Initial screening and interviews
+        - Week 2: Technical assessment and reference checks
+        - Week 3: Offer and onboarding
+
+        For interim roles, we can often place candidates within 5-7 days.
+        """,
+        "category": "faq",
+        "metadata": {"title": "Hiring Timeline FAQ", "source": "faq_database"}
+    },
+    {
+        "content": """
+        Candidate Qualification Procedure:
+
+        Step 1: Initial Contact - Gather name, email, phone
+        Step 2: Job Preferences - Role type, location, budget
+        Step 3: Experience Check - Years of experience, skills
+        Step 4: Availability - Start date, contract type
+        Step 5: Submission - Send relevant vacancies
+
+        Disqualification criteria: Budget <€50k, less than 3 years experience.
+        """,
+        "category": "procedure",
+        "metadata": {"title": "Qualification Procedure", "source": "internal_sop"}
+    }
+]
+
+async def generate_embedding(text: str) -> List[float]:
+    """Generate embedding using OpenAI"""
+
+    response = await client.embeddings.create(
+        model="text-embedding-3-small",
+        input=text
+    )
+
+    return response.data[0].embedding
+
+async def ingest_all_documents():
+    """Ingest sample documents into Supabase PGVector"""
+
+    print("📚 Starting document ingestion...")
+
+    for doc in SAMPLE_DOCUMENTS:
+        print(f"\n➡️ Processing: {doc['metadata']['title']}")
+
+        # Generate embedding
+        embedding = await generate_embedding(doc["content"])
+
+        # Insert into Supabase
+        result = await insert_document(
+            content=doc["content"],
+            embedding=embedding,
+            metadata=doc["metadata"],
+            category=doc["category"]
+        )
+
+        print(f"✅ Inserted: ID {result['id']}")
+
+    print("\n✅ All documents ingested successfully!")
+
+if __name__ == "__main__":
+    asyncio.run(ingest_all_documents())
+```
+
+**Run ingestion**:
+```bash
+python scripts/ingest_documents.py
+```
+
+**Testing**:
+```python
+# test_vector_search.py
+import asyncio
+from openai import AsyncOpenAI
+from supabase_client import search_documents
+import os
+
+client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+async def test_search(query: str):
+    """Test vector similarity search"""
+
+    print(f"\n🔍 Query: {query}")
+
+    # Generate query embedding
+    response = await client.embeddings.create(
+        model="text-embedding-3-small",
+        input=query
+    )
+    query_embedding = response.data[0].embedding
+
+    # Search documents
+    results = await search_documents(
+        query_embedding=query_embedding,
+        match_threshold=0.7,
+        match_count=3
+    )
+
+    print(f"\n📊 Found {len(results)} results:")
+    for i, result in enumerate(results, 1):
+        print(f"\n{i}. {result['metadata']['title']} (similarity: {result['similarity']:.2f})")
+        print(f"   Content: {result['content'][:100]}...")
+
+async def run_tests():
+    test_queries = [
+        "What's your return policy?",
+        "Are there any Python developer jobs?",
+        "How long does the hiring process take?",
+    ]
+
+    for query in test_queries:
+        await test_search(query)
+
+asyncio.run(run_tests())
+```
+
+---
+
+#### Day 3-5: Agentic RAG Implementation
+**Task 12.1: Add Tool Definition to Conversation Agent**
+```python
+# agents/conversation_agent.py (updated)
+from anthropic import AsyncAnthropic
+from state import ConversationState
+from openai import AsyncOpenAI
+from supabase_client import search_documents
+import os
+
+anthropic_client = AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# Tool definition for Claude
+SEARCH_KB_TOOL = {
+    "name": "search_knowledge_base",
+    "description": "Search company knowledge base for policies, products, FAQs, and procedures. Use this tool when the user asks factual questions about company information, job vacancies, policies, or procedures.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Search query to find relevant information"
+            },
+            "category": {
+                "type": "string",
+                "enum": ["policy", "product", "faq", "procedure"],
+                "description": "Optional category filter to narrow search results"
+            }
+        },
+        "required": ["query"]
+    }
+}
+
+async def search_knowledge_base(query: str, category: str = None) -> list:
+    """
+    Execute knowledge base search using vector similarity.
+    This function is called BY Claude when it decides to use the tool.
+    """
+
+    print(f"🔍 Searching knowledge base: query='{query}', category={category}")
+
+    # Generate query embedding
+    embedding_response = await openai_client.embeddings.create(
+        model="text-embedding-3-small",
+        input=query
+    )
+    query_embedding = embedding_response.data[0].embedding
+
+    # Search Supabase
+    results = await search_documents(
+        query_embedding=query_embedding,
+        match_threshold=0.7,
+        match_count=3,
+        category=category
+    )
+
+    print(f"✅ Found {len(results)} results")
+
+    return results
+
+CONVERSATION_SYSTEM_PROMPT = """You are a helpful recruitment assistant with access to a knowledge base.
+
+Your capabilities:
+- Answer questions about job opportunities, policies, and procedures
+- Search the knowledge base when users ask factual questions
+- Qualify leads for recruitment services
+- Be professional, friendly, and concise
+
+When to use search_knowledge_base tool:
+- User asks about company policies (returns, refunds, terms)
+- User asks about job vacancies or openings
+- User asks "how long does X take" (procedures)
+- User asks FAQ-type questions
+
+When NOT to search:
+- Greetings ("Hello", "Hi")
+- Small talk
+- Questions about the user themselves
+- Questions you can answer from context
+
+Guidelines:
+- Keep responses under 200 words
+- Cite information from knowledge base when used
+- Ask clarifying questions when needed
+- If you don't know, say so politely
+"""
+
+async def conversation_agent_node(state: ConversationState) -> ConversationState:
+    """
+    Conversation Agent: Generate responses with Agentic RAG
+    Model: Claude 3.5 Sonnet with tool calling
+    """
+
+    print(f"💬 Conversation Agent (Agentic RAG) processing...")
+
+    try:
+        # Build context
+        context = f"""
+User message: {state['message_content']}
+Intent: {state.get('intent', 'unknown')}
+Priority: {state.get('priority', 'medium')}
+Extracted data: {state.get('extracted_data', {})}
+        """
+
+        # Initial call with tools available
+        response = await anthropic_client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=1024,
+            system=CONVERSATION_SYSTEM_PROMPT,
+            messages=[
+                {"role": "user", "content": context}
+            ],
+            tools=[SEARCH_KB_TOOL]  # Agent CAN use, not forced!
+        )
+
+        # Check if agent decided to use tool
+        if response.stop_reason == "tool_use":
+            print("🔧 Agent decided to search knowledge base")
+
+            # Extract tool use
+            tool_use = None
+            for content_block in response.content:
+                if content_block.type == "tool_use":
+                    tool_use = content_block
+                    break
+
+            if tool_use and tool_use.name == "search_knowledge_base":
+                # Execute search
+                search_results = await search_knowledge_base(
+                    query=tool_use.input["query"],
+                    category=tool_use.input.get("category")
+                )
+
+                # Store RAG results in state
+                state["rag_results"] = search_results
+
+                # Format results for Claude
+                formatted_results = "\n\n".join([
+                    f"Document {i+1}: {r['metadata']['title']}\n{r['content']}"
+                    for i, r in enumerate(search_results)
+                ])
+
+                # Continue conversation with search results
+                final_response = await anthropic_client.messages.create(
+                    model="claude-3-5-sonnet-20241022",
+                    max_tokens=1024,
+                    system=CONVERSATION_SYSTEM_PROMPT,
+                    messages=[
+                        {"role": "user", "content": context},
+                        {"role": "assistant", "content": response.content},
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": tool_use.id,
+                                    "content": formatted_results
+                                }
+                            ]
+                        }
+                    ]
+                )
+
+                # Extract final text response
+                agent_response = ""
+                for content_block in final_response.content:
+                    if content_block.type == "text":
+                        agent_response += content_block.text
+
+                state["agent_response"] = agent_response
+                print(f"✅ Response with RAG: {agent_response[:100]}...")
+
+        else:
+            # Agent responded directly without search
+            print("💬 Direct response (no RAG needed)")
+
+            agent_response = ""
+            for content_block in response.content:
+                if content_block.type == "text":
+                    agent_response += content_block.text
+
+            state["agent_response"] = agent_response
+            print(f"✅ Response: {agent_response[:100]}...")
+
+    except Exception as e:
+        print(f"❌ Conversation error: {e}")
+        state["error"] = str(e)
+        state["agent_response"] = "I apologize, I'm having trouble processing your request."
+        state["needs_human"] = True
+
+    return state
+```
+
+**Testing Checklist**:
+- [ ] Query: "What's your return policy?" → Agent searches KB
+- [ ] Query: "Hello!" → Agent responds directly (no search)
+- [ ] Query: "Are there Python jobs?" → Agent searches KB
+- [ ] RAG results stored in state
+- [ ] Response includes information from KB
+
+---
+
+### Week 5 Deliverables
+- ✅ Knowledge base populated with documents
+- ✅ Vector embeddings generated
+- ✅ Agentic RAG working (agent decides when to search)
+- ✅ Search results integrated into responses
+- ✅ No unnecessary searches (efficient)
+
+### Testing Checklist (Week 5)
+```bash
+# Test Agentic RAG:
+1. "What's your return policy?" → Searches KB, cites policy
+2. "Hello, how are you?" → Direct response, no search
+3. "Any DevOps jobs available?" → Searches vacancies
+4. "How long does hiring take?" → Searches FAQ
+
+✅ PASS: Agent autonomously decides when to search
+```
+
+---
+
+## 🗓️ WEEK 6: CRM INTEGRATION & HUMAN TAKEOVER
+
+### Goals
+- Configure custom attributes in Chatwoot
+- Implement AI summaries
+- Build human takeover workflow
+- Test multi-channel messaging
+
+### Technical Tasks
+
+#### Day 1-2: Custom Attributes Configuration
+**Task 13.1: Define Custom Attributes in Chatwoot**
+```bash
+# In Chatwoot UI:
+# Settings → Custom Attributes → Contacts → Add Attribute
+
+# Add these custom attributes:
+1. extracted_name (Text)
+2. extracted_email (Text)
+3. extracted_phone (Text)
+4. budget_range (Text)
+5. job_type_preference (List: interim, permanent, freelance)
+6. urgency_level (List: high, medium, low)
+7. last_intent (Text)
+8. last_priority (List: high, medium, low)
+9. last_sentiment (Number: -1.0 to 1.0)
+10. ai_summary (Text - Long)
+11. lead_status (List: new, qualified, unqualified, contacted)
+12. lead_source (Text)
+13. instagram_handle (Text)
+14. follower_count (Number)
+```
+
+**Task 13.2: Enhanced CRM Agent**
+```python
+# agents/crm_agent.py (enhanced)
+from openai import AsyncOpenAI
+import httpx
+import os
+
+openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+async def generate_ai_summary(state: dict) -> str:
+    """Generate AI summary of conversation for CRM"""
+
+    summary_prompt = f"""Generate a concise CRM summary (max 100 words) of this conversation:
+
+Message: {state['message_content']}
+Intent: {state.get('intent')}
+Extracted data: {state.get('extracted_data')}
+Agent response: {state.get('agent_response')}
+
+Focus on:
+- User's needs/goals
+- Key information provided
+- Next steps needed
+- Lead quality assessment
+"""
+
+    response = await openai_client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": summary_prompt}],
+        max_tokens=150,
+        temperature=0.5
+    )
+
+    return response.choices[0].message.content
+
+async def determine_lead_status(extracted: dict) -> str:
+    """Determine lead status based on extracted data"""
+
+    # Qualified if:
+    # - Has budget > €50k
+    # - Has specific job type
+    # - High urgency
+
+    if not extracted:
+        return "new"
+
+    budget_min = extracted.get("budget_min", 0)
+    has_job_type = extracted.get("job_type") is not None
+    urgency = extracted.get("urgency", "low")
+
+    if budget_min >= 50000 and has_job_type and urgency == "high":
+        return "qualified"
+    elif budget_min > 0 and has_job_type:
+        return "qualified"
+    elif budget_min > 0 or has_job_type:
+        return "contacted"
+    else:
+        return "new"
+
+async def crm_agent_node(state: dict) -> dict:
+    """Enhanced CRM Agent with AI summaries"""
+
+    print(f"📝 CRM Agent updating contact...")
+
+    try:
+        contact_id = state["contact_id"]
+        extracted = state.get("extracted_data", {})
+
+        # Generate AI summary
+        ai_summary = await generate_ai_summary(state)
+
+        # Determine lead status
+        lead_status = await determine_lead_status(extracted)
+
+        # Build custom attributes
+        custom_attributes = {
+            "ai_summary": ai_summary,
+            "lead_status": lead_status,
+            "last_intent": state.get("intent", "unknown"),
+            "last_priority": state.get("priority", "medium"),
+            "last_sentiment": state.get("sentiment", 0.0),
+            "ai_last_updated": "2025-01-15"
+        }
+
+        # Add extracted data if present
+        if extracted:
+            if extracted.get("name"):
+                custom_attributes["extracted_name"] = extracted["name"]
+            if extracted.get("email"):
+                custom_attributes["extracted_email"] = extracted["email"]
+            if extracted.get("phone"):
+                custom_attributes["extracted_phone"] = extracted["phone"]
+            if extracted.get("budget_min") and extracted.get("budget_max"):
+                custom_attributes["budget_range"] = f"€{extracted['budget_min']}-{extracted['budget_max']}"
+            if extracted.get("job_type"):
+                custom_attributes["job_type_preference"] = extracted["job_type"]
+            if extracted.get("urgency"):
+                custom_attributes["urgency_level"] = extracted["urgency"]
+
+        # Update contact
+        url = f"{os.getenv('CHATWOOT_URL')}/api/v1/accounts/{os.getenv('CHATWOOT_ACCOUNT_ID')}/contacts/{contact_id}"
+
+        async with httpx.AsyncClient() as client:
+            response = await client.put(
+                url,
+                headers={"api_access_token": os.getenv("CHATWOOT_API_TOKEN")},
+                json={"custom_attributes": custom_attributes}
+            )
+
+            if response.status_code == 200:
+                print(f"✅ Contact updated with AI summary")
+                state["crm_updated"] = True
+            else:
+                print(f"⚠️ CRM update failed: {response.status_code}")
+                state["crm_updated"] = False
+
+        # Add labels
+        labels = []
+        if state.get("priority") == "high":
+            labels.append("high-priority")
+        if state.get("intent") == "job_search":
+            labels.append("job-seeker")
+        if lead_status == "qualified":
+            labels.append("qualified-lead")
+        if extracted and extracted.get("budget_min", 0) > 70000:
+            labels.append("high-value-lead")
+
+        if labels:
+            await update_contact_labels(contact_id, labels)
+
+    except Exception as e:
+        print(f"❌ CRM error: {e}")
+        state["crm_updated"] = False
+
+    return state
+
+async def update_contact_labels(contact_id: str, labels: list):
+    """Add labels to contact"""
+
+    url = f"{os.getenv('CHATWOOT_URL')}/api/v1/accounts/{os.getenv('CHATWOOT_ACCOUNT_ID')}/contacts/{contact_id}/labels"
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            url,
+            headers={"api_access_token": os.getenv("CHATWOOT_API_TOKEN")},
+            json={"labels": labels}
+        )
+
+        if response.status_code == 200:
+            print(f"✅ Labels added: {labels}")
+```
+
+---
+
+#### Day 3-4: Human Takeover Implementation
+**Task 14.1: Human Takeover Notification**
+```python
+# agents/human_takeover.py
+import httpx
+import os
+
+async def notify_human_agent(state: dict):
+    """
+    Notify human agent of takeover needed.
+    Methods:
+    1. Add private note in Chatwoot
+    2. Assign conversation to human agent
+    3. Change conversation status to 'open'
+    """
+
+    print(f"👤 Notifying human agent for conversation {state['conversation_id']}")
+
+    conversation_id = state["conversation_id"]
+
+    # 1. Add private note
+    note_content = f"""
+🤖 AI Agent requires human assistance:
+
+**Reason**: {state.get('intent', 'unknown intent')} (Priority: {state.get('priority', 'medium')})
+
+**Context**:
+- Message: {state['message_content'][:200]}
+- Sentiment: {state.get('sentiment', 0.0)}
+- Extracted data: {state.get('extracted_data')}
+
+**AI Assessment**:
+{state.get('agent_response', 'No automated response generated')}
+
+Please review and respond manually.
+    """
+
+    url = f"{os.getenv('CHATWOOT_URL')}/api/v1/accounts/{os.getenv('CHATWOOT_ACCOUNT_ID')}/conversations/{conversation_id}/messages"
+
+    async with httpx.AsyncClient() as client:
+        # Add private note
+        await client.post(
+            url,
+            headers={"api_access_token": os.getenv("CHATWOOT_API_TOKEN")},
+            json={
+                "content": note_content,
+                "message_type": "outgoing",
+                "private": True  # Only visible to agents
+            }
+        )
+
+        # Update conversation status to 'open'
+        await client.post(
+            f"{os.getenv('CHATWOOT_URL')}/api/v1/accounts/{os.getenv('CHATWOOT_ACCOUNT_ID')}/conversations/{conversation_id}/toggle_status",
+            headers={"api_access_token": os.getenv("CHATWOOT_API_TOKEN")},
+            json={"status": "open"}
+        )
+
+        # Add label for human review
+        await client.post(
+            f"{os.getenv('CHATWOOT_URL')}/api/v1/accounts/{os.getenv('CHATWOOT_ACCOUNT_ID')}/conversations/{conversation_id}/labels",
+            headers={"api_access_token": os.getenv("CHATWOOT_API_TOKEN")},
+            json={"labels": ["needs-human-review"]}
+        )
+
+    print("✅ Human agent notified")
+```
+
+**Task 14.2: Update Webhook Handler**
+```python
+# main.py (updated human takeover section)
+@app.post("/webhooks/chatwoot")
+async def chatwoot_webhook(payload: dict):
+    """Process webhooks with human takeover support"""
+
+    # ... (existing code) ...
+
+    # Run LangGraph workflow
+    result = await conversation_app.ainvoke(initial_state)
+
+    # Check if human needed
+    if result.get("needs_human"):
+        print("👤 Human takeover required")
+
+        # Notify human agent
+        await notify_human_agent(result)
+
+        # Send acknowledgment to user
+        await send_message_to_chatwoot(
+            conversation_id=int(result["conversation_id"]),
+            content="Thank you for your message. A human agent will respond shortly."
+        )
+
+        return {"status": "human_takeover_initiated"}
+
+    # ... (existing automated response code) ...
+```
+
+---
+
+#### Day 5-6: Multi-Channel Testing
+**Task 15.1: Instagram Integration (Optional)**
+```bash
+# In Chatwoot UI:
+# Settings → Inboxes → Add Inbox → Instagram
+
+# Requirements:
+# 1. Facebook Business Account
+# 2. Instagram Business Profile
+# 3. Meta Graph API access
+
+# Configuration:
+# - Connect Instagram account
+# - Webhook URL: https://your-app.railway.app/webhooks/instagram
+# - Permissions: instagram_manage_messages, instagram_basic
+```
+
+**Task 15.2: Email Integration**
+```bash
+# In Chatwoot UI:
+# Settings → Inboxes → Add Inbox → Email
+
+# Configuration:
+# - Email: support@yourcompany.com
+# - IMAP: imap.gmail.com:993 (SSL)
+# - SMTP: smtp.gmail.com:587 (TLS)
+# - Credentials: email + app password
+```
+
+**Testing Checklist**:
+- [ ] WhatsApp message processed correctly
+- [ ] Instagram DM processed (if configured)
+- [ ] Email processed (if configured)
+- [ ] CRM updates work across all channels
+- [ ] Human takeover works for all channels
+
+---
+
+### Week 6 Deliverables
+- ✅ Custom attributes configured in Chatwoot
+- ✅ AI summaries generated and stored
+- ✅ Lead status classification working
+- ✅ Human takeover workflow implemented
+- ✅ Private notes added for human agents
+- ✅ Multi-channel messaging tested
+
+### Testing Checklist (Week 6)
+```bash
+# Test Human Takeover:
+1. Send complaint: "This is terrible service!" → Human notified
+2. Check Chatwoot: Private note visible, status = 'open'
+3. Human replies → User receives response
+4. AI stops intervening
+
+# Test CRM:
+1. Send message with budget info
+2. Check Chatwoot contact profile
+3. Verify: AI summary, lead status, custom attributes
+
+✅ PASS: CRM and human takeover working
+```
+
+---
+
+## 🗓️ WEEK 7: PRODUCTION SERVICES
+
+### Goals
+- Integrate 360Dialog for production WhatsApp
+- Implement ScrapeCreators lead import
+- Add rate limiting
+- GDPR compliance measures
+
+### Technical Tasks
+
+#### Day 1-3: 360Dialog Integration
+**Task 16.1: Setup 360Dialog Account**
+```bash
+# 1. Sign up at https://www.360dialog.com
+# 2. Verify business
+# 3. Get API key
+# 4. Register phone number
+# 5. Configure webhook
+```
+
+**Task 16.2: 360Dialog Chatwoot Integration**
+```bash
+# In Chatwoot UI:
+# Settings → Inboxes → Add Inbox → WhatsApp
+# Select: 360Dialog
+
+# Configuration:
+# - API Key: (from 360Dialog dashboard)
+# - Phone Number ID: (from 360Dialog)
+# - Webhook URL: https://your-chatwoot.railway.app/webhooks/360dialog
+```
+
+**Task 16.3: 360Dialog Webhook Handler**
+```python
+# main.py (add 360Dialog webhook)
+@app.post("/webhooks/360dialog")
+async def dialog_360_webhook(payload: dict):
+    """
+    Receive webhooks from 360Dialog and forward to Chatwoot.
+
+    360Dialog → FastAPI → Chatwoot → LangGraph
+    """
+
+    print(f"📱 360Dialog webhook received")
+
+    # Verify webhook (360Dialog specific)
+    if payload.get("entry"):
+        for entry in payload["entry"]:
+            for change in entry.get("changes", []):
+                if change.get("value", {}).get("messages"):
+                    for message in change["value"]["messages"]:
+                        # Forward to Chatwoot inbox
+                        await forward_to_chatwoot(message)
+
+    return {"status": "ok"}
+
+async def forward_to_chatwoot(message: dict):
+    """Forward 360Dialog message to Chatwoot"""
+
+    # Extract message data
+    from_number = message.get("from")
+    text = message.get("text", {}).get("body", "")
+    message_id = message.get("id")
+
+    # Create or get contact in Chatwoot
+    contact = await get_or_create_contact(from_number)
+
+    # Create message in Chatwoot
+    url = f"{os.getenv('CHATWOOT_URL')}/api/v1/accounts/{os.getenv('CHATWOOT_ACCOUNT_ID')}/contacts/{contact['id']}/conversations"
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            url,
+            headers={"api_access_token": os.getenv("CHATWOOT_API_TOKEN")},
+            json={
+                "inbox_id": os.getenv("CHATWOOT_360DIALOG_INBOX_ID"),
+                "message": text,
+                "source_id": message_id
+            }
+        )
+
+    # This triggers Chatwoot webhook → LangGraph workflow
+```
+
+**Testing Checklist**:
+- [ ] 360Dialog account set up
+- [ ] Phone number registered
+- [ ] Webhook receiving messages
+- [ ] Messages forwarded to Chatwoot
+- [ ] LangGraph processes 360Dialog messages
+
+---
+
+#### Day 4-5: ScrapeCreators Integration
+**Task 17.1: CSV Import Script**
+```python
+# scripts/import_scrape_creators.py
+import csv
+import httpx
+import asyncio
+from typing import List, Dict
+
+CHATWOOT_URL = os.getenv("CHATWOOT_URL")
+CHATWOOT_API_TOKEN = os.getenv("CHATWOOT_API_TOKEN")
+ACCOUNT_ID = os.getenv("CHATWOOT_ACCOUNT_ID")
+
+async def import_scraped_leads(csv_file: str) -> None:
+    """
+    Import leads from ScrapeCreators CSV to Chatwoot.
+
+    CSV Format:
+    name, username, email, whatsapp, bio, followers, niche
+    """
+
+    print(f"📥 Importing leads from {csv_file}...")
+
+    imported = 0
+    errors = 0
+
+    with open(csv_file, 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+
+        for row in reader:
+            try:
+                # Create contact
+                contact = await create_contact_from_scrape(row)
+
+                if contact:
+                    imported += 1
+                    print(f"✅ Imported: {row['name']} (@{row['username']})")
+
+                    # Rate limiting: 1 contact per second (avoid API throttle)
+                    await asyncio.sleep(1)
+                else:
+                    errors += 1
+
+            except Exception as e:
+                print(f"❌ Error importing {row['name']}: {e}")
+                errors += 1
+
+    print(f"\n📊 Import complete: {imported} imported, {errors} errors")
+
+async def create_contact_from_scrape(row: Dict) -> Dict:
+    """Create Chatwoot contact from scraped data"""
+
+    async with httpx.AsyncClient() as client:
+        # Check if contact already exists
+        existing = await client.get(
+            f"{CHATWOOT_URL}/api/v1/accounts/{ACCOUNT_ID}/contacts/search",
+            headers={"api_access_token": CHATWOOT_API_TOKEN},
+            params={"q": row['username']}
+        )
+
+        if existing.json()["payload"]:
+            print(f"⏭️ Contact already exists: {row['username']}")
+            return None
+
+        # Create contact
+        response = await client.post(
+            f"{CHATWOOT_URL}/api/v1/accounts/{ACCOUNT_ID}/contacts",
+            headers={"api_access_token": CHATWOOT_API_TOKEN},
+            json={
+                "name": row['name'],
+                "email": row.get('email', ''),
+                "phone_number": row.get('whatsapp', ''),
+                "custom_attributes": {
+                    "lead_source": "instagram_scrape",
+                    "instagram_handle": row['username'],
+                    "follower_count": int(row.get('followers', 0)),
+                    "bio": row.get('bio', ''),
+                    "niche": row.get('niche', ''),
+                    "scraped_date": "2025-01-15",  # Use datetime.now()
+                    "lead_status": "new",
+                    "outreach_status": "pending"
+                }
+            }
+        )
+
+        if response.status_code != 200:
+            raise Exception(f"API error: {response.status_code}")
+
+        contact_id = response.json()['payload']['contact']['id']
+
+        # Add labels
+        await client.post(
+            f"{CHATWOOT_URL}/api/v1/accounts/{ACCOUNT_ID}/contacts/{contact_id}/labels",
+            headers={"api_access_token": CHATWOOT_API_TOKEN},
+            json={"labels": ["scraped-lead", "cold-outreach", "instagram"]}
+        )
+
+        return response.json()['payload']['contact']
+
+# Usage
+if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) < 2:
+        print("Usage: python import_scrape_creators.py leads.csv")
+        sys.exit(1)
+
+    asyncio.run(import_scraped_leads(sys.argv[1]))
+```
+
+**Run import**:
+```bash
+python scripts/import_scrape_creators.py leads.csv
+```
+
+---
+
+#### Day 6: Rate Limiting
+**Task 18.1: Implement Rate Limiting**
+```python
+# middleware/rate_limiter.py
+from fastapi import Request, HTTPException
+from collections import defaultdict
+from datetime import datetime, timedelta
+import asyncio
+
+class RateLimiter:
+    """Simple rate limiter using in-memory storage"""
+
+    def __init__(self, max_requests: int = 50, window_seconds: int = 3600):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self.requests = defaultdict(list)  # {contact_id: [timestamp1, timestamp2, ...]}
+
+    async def check_limit(self, contact_id: str) -> bool:
+        """Check if contact has exceeded rate limit"""
+
+        now = datetime.now()
+        window_start = now - timedelta(seconds=self.window_seconds)
+
+        # Clean old requests
+        self.requests[contact_id] = [
+            ts for ts in self.requests[contact_id]
+            if ts > window_start
+        ]
+
+        # Check limit
+        if len(self.requests[contact_id]) >= self.max_requests:
+            return False  # Rate limit exceeded
+
+        # Add current request
+        self.requests[contact_id].append(now)
+
+        return True  # Within limit
+
+# Initialize rate limiter
+rate_limiter = RateLimiter(max_requests=50, window_seconds=3600)  # 50 messages/hour
+
+# Use in webhook handler
+@app.post("/webhooks/chatwoot")
+async def chatwoot_webhook(payload: dict):
+    # ... (existing code) ...
+
+    contact_id = str(message.get("sender", {}).get("id"))
+
+    # Check rate limit
+    if not await rate_limiter.check_limit(contact_id):
+        print(f"⚠️ Rate limit exceeded for contact {contact_id}")
+
+        # Send rate limit message
+        await send_message_to_chatwoot(
+            conversation_id=int(message["conversation_id"]),
+            content="You've reached the message limit. Please try again later or contact support."
+        )
+
+        return {"status": "rate_limited"}
+
+    # ... (continue with LangGraph) ...
+```
+
+---
+
+#### Day 7: GDPR Compliance
+**Task 19.1: Privacy Policy & Consent**
+```python
+# agents/gdpr_compliance.py
+async def check_consent(contact_id: str) -> bool:
+    """Check if contact has given GDPR consent"""
+
+    # Query Chatwoot for consent attribute
+    contact = await get_chatwoot_contact(contact_id)
+
+    return contact.get("custom_attributes", {}).get("gdpr_consent", False)
+
+async def request_consent(conversation_id: str):
+    """Request GDPR consent from user"""
+
+    consent_message = """
+Before we continue, we need your consent to process your personal data.
+
+We collect:
+- Name, email, phone
+- Job preferences and budget
+- Conversation history
+
+Your data is used for:
+- Matching you with job opportunities
+- Providing recruitment services
+- Improving our service
+
+You can request deletion anytime by replying "DELETE MY DATA".
+
+Reply "I AGREE" to continue.
+
+Privacy Policy: https://yourcompany.com/privacy
+    """
+
+    await send_message_to_chatwoot(conversation_id, consent_message)
+
+# Add to conversation flow
+async def conversation_agent_node(state: dict) -> dict:
+    """Conversation agent with GDPR check"""
+
+    # Check consent
+    has_consent = await check_consent(state["contact_id"])
+
+    if not has_consent:
+        # First message: Request consent
+        await request_consent(state["conversation_id"])
+
+        # Wait for user response
+        state["agent_response"] = None  # Don't send automated response yet
+        state["needs_human"] = True  # Let human verify consent
+
+        return state
+
+    # ... (continue with normal conversation) ...
+```
+
+**Task 19.2: Data Deletion Endpoint**
+```python
+# main.py
+@app.post("/api/gdpr/delete")
+async def gdpr_delete_request(contact_id: str):
+    """
+    Handle GDPR data deletion requests.
+
+    Required by GDPR: Must delete within 30 days.
+    """
+
+    print(f"🗑️ GDPR deletion request for contact {contact_id}")
+
+    # 1. Delete from Chatwoot
+    async with httpx.AsyncClient() as client:
+        await client.delete(
+            f"{os.getenv('CHATWOOT_URL')}/api/v1/accounts/{os.getenv('CHATWOOT_ACCOUNT_ID')}/contacts/{contact_id}",
+            headers={"api_access_token": os.getenv("CHATWOOT_API_TOKEN")}
+        )
+
+    # 2. Log deletion for compliance
+    with open("gdpr_deletions.log", "a") as f:
+        f.write(f"{datetime.now().isoformat()}: Contact {contact_id} deleted\n")
+
+    return {"status": "deleted", "contact_id": contact_id}
+```
+
+---
+
+### Week 7 Deliverables
+- ✅ 360Dialog production WhatsApp working
+- ✅ ScrapeCreators CSV import script
+- ✅ Rate limiting implemented (50 msg/hour)
+- ✅ GDPR consent flow
+- ✅ Data deletion endpoint
+
+### Testing Checklist (Week 7)
+```bash
+# Test 360Dialog:
+1. Send WhatsApp to production number
+2. Message appears in Chatwoot
+3. LangGraph processes correctly
+4. Response delivered via 360Dialog
+
+# Test Import:
+1. Run: python import_scrape_creators.py test.csv
+2. Check Chatwoot: Contacts imported
+3. Verify: Custom attributes, labels
+
+# Test Rate Limit:
+1. Send 51 messages rapidly
+2. 51st message: Rate limit response
+
+✅ PASS: Production services working
+```
+
+---
+
+## 🗓️ WEEK 8: WHITE-LABEL & DEPLOYMENT
+
+### Goals
+- Apply white-label branding
+- End-to-end testing
+- Performance optimization
+- Production deployment
+
+### Technical Tasks
+
+#### Day 1-2: White-Label Branding
+**Task 20.1: Custom Branding Configuration**
+```yaml
+# docker-compose.yml (per-client configuration)
+version: '3'
+
+services:
+  chatwoot:
+    image: chatwoot/chatwoot:latest
+    environment:
+      # Core
+      RAILS_ENV: production
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+
+      # Database
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+
+      # White-label branding
+      BRAND_NAME: "RecruitmentPro CRM"
+      FRONTEND_URL: "https://client1.yourcompany.com"
+      LOGO_THUMBNAIL: "https://cdn.yourcompany.com/client1/logo-small.png"
+      LOGO: "https://cdn.yourcompany.com/client1/logo-large.png"
+      WIDGET_BRAND_URL: ""  # Removes "Powered by Chatwoot"
+
+      # Colors
+      PRIMARY_COLOR: "#1f93ff"
+
+    ports:
+      - "3000:3000"
+    depends_on:
+      - postgres
+      - redis
+
+  postgres:
+    image: postgres:14
+    environment:
+      POSTGRES_DB: chatwoot_production
+      POSTGRES_USER: chatwoot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+
+volumes:
+  postgres_data:
+  redis_data:
+```
+
+**Task 20.2: Custom CSS**
+```css
+/* custom-branding.css */
+:root {
+  --color-primary: #1f93ff;
+  --color-primary-dark: #1a7dd9;
+  --color-secondary: #6c757d;
+}
+
+/* Logo customization */
+.app-logo {
+  content: url('https://cdn.yourcompany.com/client1/logo.png');
+}
+
+/* Hide "Powered by Chatwoot" */
+.branding-footer {
+  display: none !important;
+}
+
+/* Custom colors */
+.button--primary {
+  background-color: var(--color-primary);
+}
+
+.conversation-sidebar {
+  border-left-color: var(--color-primary);
+}
+```
+
+**Deploy per client**:
+```bash
+# Client 1
+docker-compose -f docker-compose.client1.yml up -d
+
+# Client 2
+docker-compose -f docker-compose.client2.yml up -d
+
+# Each gets own:
+# - Database
+# - Chatwoot instance
+# - Subdomain (client1.yourcompany.com)
+# - Branding
+```
+
+---
+
+#### Day 3-4: End-to-End Testing
+**Task 21.1: Integration Test Suite**
+```python
+# tests/test_integration.py
+import pytest
+import httpx
+import asyncio
+
+@pytest.mark.asyncio
+async def test_full_conversation_flow():
+    """Test complete conversation flow: WhatsApp → Chatwoot → LangGraph → Response"""
+
+    # 1. Send message to webhook (simulating Chatwoot)
+    webhook_payload = {
+        "event": "message_created",
+        "account": {"id": 1},
+        "message": {
+            "id": 123,
+            "content": "Hi, I'm looking for Python developer jobs, budget €70-90k",
+            "message_type": "incoming",
+            "conversation_id": 456,
+            "sender": {"id": 789}
+        }
+    }
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            "http://localhost:8000/webhooks/chatwoot",
+            json=webhook_payload
+        )
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "processed"
+
+    # 2. Verify CRM updated
+    await asyncio.sleep(2)  # Wait for async processing
+
+    # TODO: Query Chatwoot API to verify contact attributes
+
+    # 3. Verify response sent
+    # TODO: Check Chatwoot conversation for agent response
+
+@pytest.mark.asyncio
+async def test_agentic_rag_search():
+    """Test that agent searches knowledge base when appropriate"""
+
+    webhook_payload = {
+        "event": "message_created",
+        "account": {"id": 1},
+        "message": {
+            "id": 124,
+            "content": "What's your return policy?",
+            "message_type": "incoming",
+            "conversation_id": 457,
+            "sender": {"id": 790}
+        }
+    }
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            "http://localhost:8000/webhooks/chatwoot",
+            json=webhook_payload
+        )
+
+        assert response.status_code == 200
+        # TODO: Verify agent response contains policy information
+
+@pytest.mark.asyncio
+async def test_human_takeover():
+    """Test human takeover for complaints"""
+
+    webhook_payload = {
+        "event": "message_created",
+        "account": {"id": 1},
+        "message": {
+            "id": 125,
+            "content": "This is terrible service! I want a refund!",
+            "message_type": "incoming",
+            "conversation_id": 458,
+            "sender": {"id": 791}
+        }
+    }
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            "http://localhost:8000/webhooks/chatwoot",
+            json=webhook_payload
+        )
+
+        assert response.status_code == 200
+        assert "human_takeover" in response.json()["status"]
+
+# Run tests
+# pytest tests/test_integration.py -v
+```
+
+---
+
+#### Day 5: Performance Optimization
+**Task 22.1: Add Caching**
+```python
+# middleware/cache.py
+from functools import lru_cache
+import hashlib
+import json
+
+@lru_cache(maxsize=100)
+async def cached_vector_search(query_hash: str):
+    """Cache vector search results"""
+    # Implement caching for common queries
+    pass
+
+# Use in conversation agent
+async def search_knowledge_base(query: str, category: str = None) -> list:
+    """Search with caching"""
+
+    # Create cache key
+    cache_key = hashlib.md5(f"{query}:{category}".encode()).hexdigest()
+
+    # Check cache
+    cached = await get_from_cache(cache_key)
+    if cached:
+        print("✅ Cache hit")
+        return cached
+
+    # Execute search
+    results = await _execute_search(query, category)
+
+    # Store in cache (5 minute TTL)
+    await store_in_cache(cache_key, results, ttl=300)
+
+    return results
+```
+
+**Task 22.2: Database Connection Pooling**
+```python
+# database/connection.py
+from sqlalchemy import create_engine
+from sqlalchemy.pool import QueuePool
+
+engine = create_engine(
+    os.getenv("DATABASE_URL"),
+    poolclass=QueuePool,
+    pool_size=10,
+    max_overflow=20,
+    pool_timeout=30,
+    pool_recycle=3600
+)
+```
+
+---
+
+#### Day 6-7: Production Deployment
+**Task 23.1: Railway Deployment**
+```bash
+# Deploy FastAPI service
+cd chatwoot-webhook-service
+railway init
+railway link
+railway add --plugin redis  # For caching
+railway up
+
+# Set environment variables
+railway variables set OPENAI_API_KEY=xxx
+railway variables set ANTHROPIC_API_KEY=xxx
+railway variables set CHATWOOT_URL=xxx
+railway variables set CHATWOOT_API_TOKEN=xxx
+railway variables set SUPABASE_URL=xxx
+railway variables set SUPABASE_SERVICE_KEY=xxx
+
+# Deploy Chatwoot
+cd ../chatwoot
+railway up
+
+# Configure custom domain
+railway domain add client1.yourcompany.com
+```
+
+**Task 23.2: Monitoring Setup**
+```python
+# monitoring/health.py
+from fastapi import FastAPI
+from prometheus_client import Counter, Histogram, generate_latest
+
+app = FastAPI()
+
+# Metrics
+messages_processed = Counter('messages_processed_total', 'Total messages processed')
+processing_time = Histogram('processing_time_seconds', 'Message processing time')
+errors = Counter('errors_total', 'Total errors', ['type'])
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus metrics endpoint"""
+    return generate_latest()
+
+@app.get("/health")
+async def health():
+    """Health check endpoint"""
+
+    # Check database connection
+    # Check Supabase connection
+    # Check API keys
+
+    return {
+        "status": "healthy",
+        "version": "1.0",
+        "services": {
+            "database": "ok",
+            "supabase": "ok",
+            "openai": "ok",
+            "anthropic": "ok"
+        }
+    }
+```
+
+---
+
+### Week 8 Deliverables
+- ✅ White-label branding applied
+- ✅ Per-client Docker Compose configs
+- ✅ End-to-end tests passing
+- ✅ Performance optimizations implemented
+- ✅ Production deployment complete
+- ✅ Monitoring active
+
+### Final Testing Checklist (Week 8)
+```bash
+# Production Smoke Tests:
+1. WhatsApp → Chatwoot → LangGraph → Response ✅
+2. RAG search working ✅
+3. CRM updates persisting ✅
+4. Human takeover triggers correctly ✅
+5. Rate limiting active ✅
+6. GDPR compliance working ✅
+7. White-label branding visible ✅
+8. 360Dialog production WhatsApp ✅
+9. Monitoring dashboards live ✅
+10. Performance <3s response time ✅
+
+🚀 READY FOR PRODUCTION!
+```
+
+---
+
+## 📚 DEVELOPMENT ENVIRONMENT SETUP
+
+### Local Docker Compose (All Services)
+```yaml
+# docker-compose.dev.yml
+version: '3'
+
+services:
+  chatwoot:
+    image: chatwoot/chatwoot:latest
+    environment:
+      RAILS_ENV: development
+      DATABASE_URL: postgres://postgres:password@postgres:5432/chatwoot_dev
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "3000:3000"
+    depends_on:
+      - postgres
+      - redis
+
+  postgres:
+    image: postgres:14
+    environment:
+      POSTGRES_DB: chatwoot_dev
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  fastapi:
+    build: ./chatwoot-webhook-service
+    environment:
+      CHATWOOT_URL: http://chatwoot:3000
+      CHATWOOT_API_TOKEN: ${CHATWOOT_API_TOKEN}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./chatwoot-webhook-service:/app
+    depends_on:
+      - chatwoot
+
+volumes:
+  postgres_data:
+```
+
+**Start local environment**:
+```bash
+docker-compose -f docker-compose.dev.yml up -d
+```
+
+---
+
+## 🧪 TESTING STRATEGY
+
+### Unit Tests (Business Logic)
+```python
+# tests/unit/test_agents.py
+import pytest
+from agents.router_agent import router_agent_node
+from state import ConversationState
+
+@pytest.mark.asyncio
+async def test_router_classifies_job_search():
+    state = {
+        "message_content": "Looking for Python developer jobs",
+        "message_id": "test",
+        "conversation_id": "test",
+        "contact_id": "test",
+        "account_id": "1",
+        "channel": "whatsapp",
+        "message_type": "incoming",
+        "needs_human": False,
+        "retry_count": 0
+    }
+
+    result = await router_agent_node(state)
+
+    assert result["intent"] == "job_search"
+    assert result["priority"] in ["medium", "low"]
+
+# Run: pytest tests/unit/ -v
+```
+
+### Integration Tests (API Endpoints)
+```python
+# tests/integration/test_webhook.py
+import pytest
+import httpx
+
+@pytest.mark.asyncio
+async def test_chatwoot_webhook_endpoint():
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            "http://localhost:8000/webhooks/chatwoot",
+            json={"event": "message_created", "message": {...}}
+        )
+
+        assert response.status_code == 200
+
+# Run: pytest tests/integration/ -v
+```
+
+### End-to-End Tests
+```bash
+# tests/e2e/test_full_flow.sh
+#!/bin/bash
+
+# 1. Send WhatsApp message
+curl -X POST http://localhost:8000/webhooks/chatwoot -d '...'
+
+# 2. Wait for processing
+sleep 3
+
+# 3. Check Chatwoot for response
+curl http://localhost:3000/api/v1/conversations/123
+
+# 4. Verify CRM updated
+curl http://localhost:3000/api/v1/contacts/456
+```
+
+---
+
+## 🚀 DEPLOYMENT GUIDE
+
+### Railway Deployment Steps
+```bash
+# 1. Install Railway CLI
+npm install -g @railway/cli
+
+# 2. Login
+railway login
+
+# 3. Initialize project
+railway init
+
+# 4. Add services
+railway add --plugin postgresql
+railway add --plugin redis
+
+# 5. Deploy Chatwoot
+railway up
+
+# 6. Deploy FastAPI
+cd chatwoot-webhook-service
+railway up
+
+# 7. Set environment variables
+railway variables set OPENAI_API_KEY=xxx
+railway variables set ANTHROPIC_API_KEY=xxx
+...
+
+# 8. Configure custom domain
+railway domain add app.yourcompany.com
+
+# 9. Enable automatic deployments
+railway link <github-repo>
+```
+
+### Environment Variables Checklist
+```bash
+# Required for production:
+CHATWOOT_URL=https://app.yourcompany.com
+CHATWOOT_API_TOKEN=xxx
+CHATWOOT_ACCOUNT_ID=1
+CHATWOOT_360DIALOG_INBOX_ID=xxx
+
+OPENAI_API_KEY=sk-xxx
+ANTHROPIC_API_KEY=sk-ant-xxx
+
+SUPABASE_URL=https://xxx.supabase.co
+SUPABASE_SERVICE_KEY=xxx
+
+DIALOG_360_API_KEY=xxx
+DIALOG_360_PHONE_ID=xxx
+
+SECRET_KEY_BASE=$(openssl rand -hex 64)
+DATABASE_URL=postgresql://...
+REDIS_URL=redis://...
+
+# White-label
+BRAND_NAME="YourCompany CRM"
+LOGO_THUMBNAIL=https://...
+LOGO=https://...
+```
+
+---
+
+## 📊 MONITORING & OBSERVABILITY
+
+### Key Metrics to Track
+```python
+# Metrics:
+1. Messages processed per hour
+2. Average response time (<3s target)
+3. Human takeover rate (%)
+4. RAG search rate (%)
+5. Error rate (target <1%)
+6. CRM update success rate (target >99%)
+
+# Alerts:
+- Response time >5s (5 consecutive)
+- Error rate >5% (1 hour window)
+- API failures (OpenAI, Anthropic, Supabase)
+- Webhook downtime
+```
+
+### Railway Dashboard
+```bash
+# View logs
+railway logs
+
+# View metrics
+railway metrics
+
+# Monitor deployments
+railway status
+```
+
+---
+
+## 🎯 SUCCESS CRITERIA
+
+### Technical
+- ✅ All 4 agents working correctly
+- ✅ Agentic RAG searches knowledge base autonomously
+- ✅ CRM updates persist in Chatwoot
+- ✅ Multi-channel messaging works (WhatsApp, Instagram, Email)
+- ✅ Human takeover triggers correctly
+- ✅ Response time <3 seconds (95th percentile)
+- ✅ 99% uptime on Railway
+
+### Business
+- ✅ 3 use cases tested end-to-end
+- ✅ White-label branding applied
+- ✅ Cost per client = €115/month
+- ✅ 360Dialog production WhatsApp working
+- ✅ ScrapeCreators import working
+
+### User Experience
+- ✅ AI summaries accurate (>90%)
+- ✅ Human can take over smoothly
+- ✅ Contact profiles show all data
+- ✅ No context lost between channels
+- ✅ GDPR compliant
+
+---
+
+## 🔮 FUTURE ENHANCEMENTS (Post-Launch)
+
+### Month 3-6 Roadmap
+1. **Next.js Analytics Dashboard** (if Chatwoot insufficient)
+   - Sales pipeline visualization
+   - Conversion rate tracking
+   - Agent performance metrics
+
+2. **Additional Channels**
+   - Telegram integration
+   - Facebook Messenger
+   - SMS (Twilio)
+
+3. **Advanced Features**
+   - A/B testing for agent responses
+   - Multi-language support
+   - Voice message processing
+   - Image recognition (for product inquiries)
+
+4. **Integrations**
+   - Zapier/Make webhooks
+   - CRM export (Salesforce, HubSpot)
+   - Calendar scheduling (Calendly)
+   - Payment processing (Stripe)
+
+---
+
+## 📋 TASK BREAKDOWN SUMMARY
+
+### Week 1-2 (20 tasks)
+- Chatwoot deployment (3 tasks)
+- WhatsApp MCP integration (3 tasks)
+- FastAPI webhook (4 tasks)
+- Supabase PGVector (4 tasks)
+- Docker Compose (2 tasks)
+- Testing (4 tasks)
+
+### Week 3-4 (18 tasks)
+- LangGraph setup (3 tasks)
+- Router agent (2 tasks)
+- Extraction agent (2 tasks)
+- Conversation agent (2 tasks)
+- CRM agent (3 tasks)
+- Integration (3 tasks)
+- Testing (3 tasks)
+
+### Week 5 (12 tasks)
+- Knowledge base population (3 tasks)
+- Vector embeddings (2 tasks)
+- Agentic RAG implementation (4 tasks)
+- Testing (3 tasks)
+
+### Week 6 (15 tasks)
+- Custom attributes (3 tasks)
+- AI summaries (2 tasks)
+- Lead classification (2 tasks)
+- Human takeover (3 tasks)
+- Multi-channel (2 tasks)
+- Testing (3 tasks)
+
+### Week 7 (20 tasks)
+- 360Dialog integration (5 tasks)
+- ScrapeCreators import (3 tasks)
+- Rate limiting (2 tasks)
+- GDPR compliance (4 tasks)
+- Testing (6 tasks)
+
+### Week 8 (18 tasks)
+- White-label branding (4 tasks)
+- Integration testing (3 tasks)
+- Performance optimization (3 tasks)
+- Production deployment (4 tasks)
+- Monitoring (2 tasks)
+- Final testing (2 tasks)
+
+**TOTAL: 103 tasks across 8 weeks**
+
+---
+
+## 🎓 LEARNING RESOURCES
+
+### Documentation Links
+- [Chatwoot API Docs](https://www.chatwoot.com/developers/api)
+- [LangGraph Guide](https://langchain-ai.github.io/langgraph/)
+- [Pydantic AI Docs](https://ai.pydantic.dev/)
+- [Claude API Reference](https://docs.anthropic.com/claude/reference)
+- [Supabase PGVector](https://supabase.com/docs/guides/database/extensions/pgvector)
+- [360Dialog API](https://docs.360dialog.com/)
+- [Railway Deployment](https://docs.railway.app/)
+
+### Recommended Tutorials
+1. FastAPI async patterns
+2. LangGraph state machines
+3. Vector similarity search
+4. WhatsApp Business API
+5. Docker Compose multi-container apps
+
+---
+
+**END OF IMPLEMENTATION ROADMAP v5.1**
+
+**Ready to build? Start with Week 1, Day 1!**
+
+**Questions? Review PRD v5.1 or contact project lead.**
+
+🚀 **Let's build something amazing!**
