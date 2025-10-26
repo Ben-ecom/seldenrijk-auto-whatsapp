@@ -595,6 +595,14 @@ class EnhancedCRMAgent(BaseAgent):
             extraction=state.get("extraction_output")
         )
 
+        # Step 7: Sync to HubSpot CRM (if enabled)
+        hubspot_synced = asyncio.run(self._sync_to_hubspot(
+            phone=state["sender_phone"],
+            name=state.get("sender_name", "Unknown"),
+            lead_score_data=lead_score_data,
+            behavioral_flags=behavioral_flags
+        ))
+
         logger.info(
             f"✅ Enhanced CRM complete: Score={lead_score_data['lead_score']}, Quality={lead_score_data['lead_quality']}, Tags={len(tags)}",
             extra={
@@ -607,6 +615,7 @@ class EnhancedCRMAgent(BaseAgent):
         return {
             "output": {
                 "contact_updated": chatwoot_success,
+                "hubspot_synced": hubspot_synced,
                 "lead_score": lead_score_data["lead_score"],
                 "lead_quality": lead_score_data["lead_quality"],
                 "interest_level": lead_score_data["interest_level"],
@@ -819,3 +828,94 @@ class EnhancedCRMAgent(BaseAgent):
             )
         except Exception as e:
             logger.error(f"❌ Failed to save lead score to DB: {e}")
+
+    async def _sync_to_hubspot(
+        self,
+        phone: str,
+        name: str,
+        lead_score_data: Dict,
+        behavioral_flags: Dict
+    ) -> bool:
+        """
+        Sync contact and lead score to HubSpot CRM.
+
+        Args:
+            phone: Customer phone number (E.164 format)
+            name: Customer name
+            lead_score_data: Lead scoring results from scoring engine
+            behavioral_flags: Behavioral flags from message analysis
+
+        Returns:
+            True if synced successfully, False otherwise
+        """
+        # Check if HubSpot is enabled
+        if os.getenv("HUBSPOT_ENABLED", "false").lower() != "true":
+            logger.debug("HubSpot sync disabled (HUBSPOT_ENABLED=false)")
+            return False
+
+        try:
+            from app.integrations.hubspot_client import get_hubspot_client
+
+            hubspot_client = get_hubspot_client()
+
+            # Split name into first/last
+            name_parts = name.split(" ", 1)
+            first_name = name_parts[0] if name_parts else None
+            last_name = name_parts[1] if len(name_parts) > 1 else None
+
+            # Check if contact exists
+            existing_contact = await hubspot_client.find_contact_by_phone(phone)
+
+            if existing_contact:
+                # Update existing contact with latest lead score
+                await hubspot_client.update_contact(
+                    contact_id=existing_contact["id"],
+                    lead_score=lead_score_data["lead_score"],
+                    lead_status=lead_score_data["lead_quality"]
+                )
+
+                logger.info(
+                    "✅ HubSpot contact updated",
+                    extra={
+                        "contact_id": existing_contact["id"],
+                        "phone": phone,
+                        "lead_score": lead_score_data["lead_score"],
+                        "lead_quality": lead_score_data["lead_quality"]
+                    }
+                )
+            else:
+                # Create new contact
+                contact_id = await hubspot_client.create_contact(
+                    phone=phone,
+                    first_name=first_name,
+                    last_name=last_name,
+                    lead_score=lead_score_data["lead_score"],
+                    lead_status=lead_score_data["lead_quality"]
+                )
+
+                if contact_id:
+                    logger.info(
+                        "✅ HubSpot contact created",
+                        extra={
+                            "contact_id": contact_id,
+                            "phone": phone,
+                            "lead_score": lead_score_data["lead_score"],
+                            "lead_quality": lead_score_data["lead_quality"]
+                        }
+                    )
+                else:
+                    logger.warning("⚠️ Failed to create HubSpot contact")
+                    return False
+
+            return True
+
+        except Exception as e:
+            logger.error(
+                "❌ HubSpot sync failed (non-critical)",
+                extra={
+                    "phone": phone,
+                    "error": str(e)
+                },
+                exc_info=True
+            )
+            return False

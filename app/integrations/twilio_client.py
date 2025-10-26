@@ -7,19 +7,26 @@ Handles message sending, delivery tracking, and error recovery.
 Features:
 - Automatic retry with exponential backoff
 - Rate limiting (compliance with Twilio limits)
+- Redis-based message deduplication
 - Comprehensive error handling
+- Phone number format normalization
+- Structured logging
 - Delivery status webhooks
-- Media message support (future)
+- Media message support
 """
 import os
-import logging
+import hashlib
+import structlog
 from typing import Optional, Dict, Any, List
 from twilio.rest import Client
 from twilio.base.exceptions import TwilioRestException
 import time
 from functools import wraps
 
-logger = logging.getLogger(__name__)
+from app.utils.phone_formatter import format_phone_for_twilio, normalize_phone_to_e164
+from app.database.redis_client import get_redis_client
+
+logger = structlog.get_logger(__name__)
 
 
 class TwilioWhatsAppClient:
@@ -64,6 +71,9 @@ class TwilioWhatsAppClient:
         # Initialize Twilio REST client
         self.client = Client(self.account_sid, self.auth_token)
 
+        # Initialize Redis for deduplication
+        self.redis_client = get_redis_client()
+
         # Rate limiting (Twilio allows 80 messages/second per account)
         self._rate_limit_window = 1.0  # 1 second window
         self._rate_limit_max_messages = 80
@@ -71,7 +81,7 @@ class TwilioWhatsAppClient:
 
         logger.info(
             "Twilio WhatsApp client initialized",
-            extra={"from_number": self.from_number}
+            from_number=self.from_number
         )
 
     def _check_rate_limit(self) -> bool:
@@ -93,10 +103,8 @@ class TwilioWhatsAppClient:
         if len(self._message_timestamps) >= self._rate_limit_max_messages:
             logger.warning(
                 "Rate limit reached",
-                extra={
-                    "messages_in_window": len(self._message_timestamps),
-                    "max_allowed": self._rate_limit_max_messages
-                }
+                messages_in_window=len(self._message_timestamps),
+                max_allowed=self._rate_limit_max_messages
             )
             return False
 
@@ -110,22 +118,24 @@ class TwilioWhatsAppClient:
         self,
         to_number: str,
         message: str,
+        media_url: Optional[str] = None,
         max_retries: int = 3,
         retry_delay: float = 1.0
     ) -> Dict[str, Any]:
         """
-        Send WhatsApp message via Twilio.
+        Send WhatsApp message via Twilio with deduplication.
 
         Args:
-            to_number: Recipient phone number (E.164 format, e.g., "+31612345678")
+            to_number: Recipient phone number (any format - will be normalized)
             message: Message text (max 1600 characters)
+            media_url: Optional media URL for images/videos
             max_retries: Maximum retry attempts on failure
             retry_delay: Initial delay between retries (exponential backoff)
 
         Returns:
             Dict with status and message details:
             {
-                "status": "sent" | "failed" | "rate_limited",
+                "status": "sent" | "failed" | "rate_limited" | "duplicate",
                 "message_sid": "SM...",
                 "to": "+31612345678",
                 "error": Optional error message
@@ -135,30 +145,51 @@ class TwilioWhatsAppClient:
             ValueError: If to_number is invalid or message too long
         """
         # Validate inputs
-        if not to_number:
-            raise ValueError("to_number is required")
-
         if not message:
             raise ValueError("message is required")
 
         if len(message) > 1600:
             logger.warning(
-                f"Message truncated from {len(message)} to 1600 characters",
-                extra={"to": to_number}
+                "Message truncated from length",
+                original_length=len(message),
+                to=to_number
             )
             message = message[:1600]
 
-        # Normalize phone number (add whatsapp: prefix if missing)
-        if not to_number.startswith("whatsapp:"):
-            to_number_normalized = f"whatsapp:{to_number}"
-        else:
-            to_number_normalized = to_number
+        # Normalize phone number using formatter
+        try:
+            to_number_formatted = format_phone_for_twilio(to_number)
+            to_number_e164 = normalize_phone_to_e164(to_number)
+        except ValueError as e:
+            logger.error("Invalid phone number", phone=to_number, error=str(e))
+            return {
+                "status": "failed",
+                "to": to_number,
+                "error": f"Invalid phone number: {str(e)}"
+            }
+
+        # Deduplication check (1 hour TTL)
+        message_hash = hashlib.sha256(f"{to_number_e164}:{message}".encode()).hexdigest()[:16]
+        cache_key = f"twilio:send:dedupe:{to_number_e164}:{message_hash}"
+
+        if self.redis_client.get(cache_key):
+            logger.info(
+                "Duplicate message blocked",
+                to=to_number_e164,
+                message_hash=message_hash
+            )
+            return {
+                "status": "duplicate",
+                "to": to_number_e164,
+                "error": "Duplicate message within 1 hour window"
+            }
 
         # Check rate limit
         if not self._check_rate_limit():
+            logger.warning("Rate limit exceeded", to=to_number_e164)
             return {
                 "status": "rate_limited",
-                "to": to_number,
+                "to": to_number_e164,
                 "error": "Rate limit exceeded (80 messages/second)"
             }
 
@@ -166,30 +197,39 @@ class TwilioWhatsAppClient:
         last_error = None
         for attempt in range(max_retries):
             try:
+                # Prepare message parameters
+                message_params = {
+                    "from_": self.from_number,
+                    "to": to_number_formatted,
+                    "body": message
+                }
+
+                # Add media URL if provided
+                if media_url:
+                    message_params["media_url"] = [media_url]
+
                 # Send message via Twilio
-                twilio_message = self.client.messages.create(
-                    from_=self.from_number,
-                    to=to_number_normalized,
-                    body=message
-                )
+                twilio_message = self.client.messages.create(**message_params)
 
                 # Record for rate limiting
                 self._record_message_sent()
 
+                # Cache deduplication key (1 hour TTL)
+                self.redis_client.setex(cache_key, 3600, "1")
+
                 logger.info(
                     "Message sent successfully",
-                    extra={
-                        "message_sid": twilio_message.sid,
-                        "to": to_number,
-                        "status": twilio_message.status,
-                        "attempt": attempt + 1
-                    }
+                    message_sid=twilio_message.sid,
+                    to=to_number_e164,
+                    status=twilio_message.status,
+                    attempt=attempt + 1,
+                    has_media=bool(media_url)
                 )
 
                 return {
                     "status": "sent",
                     "message_sid": twilio_message.sid,
-                    "to": to_number,
+                    "to": to_number_e164,
                     "twilio_status": twilio_message.status,
                     "price": twilio_message.price,
                     "price_unit": twilio_message.price_unit
@@ -200,33 +240,39 @@ class TwilioWhatsAppClient:
 
                 # Log error details
                 logger.error(
-                    f"Twilio API error (attempt {attempt + 1}/{max_retries})",
-                    extra={
-                        "error_code": e.code,
-                        "error_message": e.msg,
-                        "to": to_number,
-                        "status": e.status
-                    }
+                    "Twilio API error",
+                    attempt=f"{attempt + 1}/{max_retries}",
+                    error_code=e.code,
+                    error_message=e.msg,
+                    to=to_number_e164,
+                    status=e.status
                 )
 
                 # Don't retry on permanent errors
-                if e.code in [21211, 21612, 21614]:  # Invalid phone, unregistered, etc.
+                # 21211: Invalid To number
+                # 21612: The 'To' number is not currently reachable via SMS or WhatsApp
+                # 21614: 'To' number is not a valid mobile number
+                # 63016: Message body is required
+                # 20003: Authentication Error
+                if e.code in [21211, 21612, 21614, 63016, 20003]:
                     logger.error(
                         "Permanent error - not retrying",
-                        extra={"error_code": e.code}
+                        error_code=e.code
                     )
                     break
 
                 # Wait before retry (exponential backoff)
                 if attempt < max_retries - 1:
                     wait_time = retry_delay * (2 ** attempt)
-                    logger.info(f"Retrying in {wait_time}s...")
+                    logger.info("Retrying after backoff", wait_seconds=wait_time)
                     time.sleep(wait_time)
 
             except Exception as e:
                 last_error = e
                 logger.error(
-                    f"Unexpected error sending message (attempt {attempt + 1}/{max_retries})",
+                    "Unexpected error sending message",
+                    attempt=f"{attempt + 1}/{max_retries}",
+                    error=str(e),
                     exc_info=True
                 )
 
@@ -236,7 +282,7 @@ class TwilioWhatsAppClient:
         # All retries failed
         return {
             "status": "failed",
-            "to": to_number,
+            "to": to_number_e164,
             "error": str(last_error),
             "attempts": max_retries
         }
@@ -292,7 +338,11 @@ class TwilioWhatsAppClient:
             }
 
         except TwilioRestException as e:
-            logger.error(f"Error fetching message status: {e}")
+            logger.error(
+                "Error fetching message status",
+                message_sid=message_sid,
+                error=str(e)
+            )
             return {
                 "status": "error",
                 "error": str(e)

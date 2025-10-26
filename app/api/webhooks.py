@@ -4,7 +4,6 @@ Includes P0 security fixes: signature verification and rate limiting.
 """
 from fastapi import APIRouter, HTTPException, Request, Header, Depends
 from typing import Optional
-import redis
 from datetime import timedelta
 from app.limiter import limiter
 from app.security.webhook_auth import (
@@ -17,18 +16,15 @@ from app.security.webhook_auth import (
 from app.tasks.process_message import process_message_async
 from app.monitoring.logging_config import get_logger
 from app.monitoring.metrics import webhook_requests_total, webhook_signature_errors_total
+from app.database.redis_client import get_redis_client
 import os
 import hashlib
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
 
-# Initialize Redis client for message deduplication
-redis_client = redis.Redis(
-    host=os.getenv("REDIS_HOST", "redis"),
-    port=int(os.getenv("REDIS_PORT", 6379)),
-    decode_responses=True
-)
+# Get centralized Redis client instance
+redis_client = get_redis_client()
 
 @router.get("/whatsapp/verify")
 async def verify_whatsapp_webhook(
@@ -133,7 +129,7 @@ async def chatwoot_webhook(
         if message_type == "outgoing":
             # For messages WITHOUT sender field (direct API format),
             # we assume ALL outgoing messages are from human agents
-            # Bot messages are caught by deduplication check above (synced_from_waha cache key)
+            # Bot messages are caught by deduplication check above (synced cache key)
             logger.info(
                 "✉️ Human agent outgoing message detected",
                 extra={
@@ -142,11 +138,11 @@ async def chatwoot_webhook(
                 }
             )
 
-            # Forward to WhatsApp via WAHA
-            await _forward_chatwoot_to_waha(payload)
+            # Forward human agent message to WhatsApp via Twilio
+            await _forward_chatwoot_to_twilio(payload)
+            logger.info("✅ Human agent message forwarded to Twilio")
 
-            logger.info("✅ Human agent message forwarded to WhatsApp")
-            return {"status": "forwarded", "reason": "human_agent_message"}
+            return {"status": "forwarded", "reason": "human_agent_message", "provider": "twilio"}
 
         # Queue message processing (async via Celery)
         task = process_message_async.delay(payload)
@@ -170,128 +166,6 @@ async def chatwoot_webhook(
     except Exception as e:
         logger.error("Webhook processing failed", extra={"error": str(e)}, exc_info=True)
         webhook_requests_total.labels(source="chatwoot", status="error").inc()
-
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-@router.post("/waha")
-@limiter.limit("10/minute")
-async def waha_webhook(
-    request: Request
-):
-    """
-    WAHA (WhatsApp HTTP API) webhook endpoint with signature verification.
-
-    Security:
-    - HMAC-SHA512 signature verification (X-Webhook-Hmac header)
-    - Rate limiting (10 req/min per IP)
-
-    Args:
-        request: FastAPI request
-
-    Returns:
-        dict: Acknowledgment response
-    """
-
-    try:
-        # Get raw body for signature verification
-        body_bytes = await request.body()
-
-        # Verify WAHA HMAC signature
-        signature = request.headers.get("X-Webhook-Hmac")
-        algorithm = request.headers.get("X-Webhook-Hmac-Algorithm")
-        verify_waha_signature(body_bytes, signature, algorithm)
-
-        # Parse JSON payload
-        import json
-        payload = json.loads(body_bytes.decode('utf-8'))
-
-        # Track webhook request
-        webhook_requests_total.labels(source="waha", status="received").inc()
-
-        logger.info("WAHA webhook received", extra={"payload": payload})
-
-        # WAHA webhook format
-        event_type = payload.get("event")
-
-        # Only process "message" events (not "message.any" to avoid duplicates)
-        # WAHA sends both "message" and "message.any" for the same message
-        if event_type != "message":
-            logger.debug("Ignoring non-message event", extra={"event": event_type})
-            return {"status": "ignored", "event": event_type}
-
-        # Extract message data
-        message_data = payload.get("payload", {})
-
-        if not message_data:
-            logger.info("No message data in WAHA webhook")
-            return {"status": "ignored", "reason": "no_message_data"}
-
-        # FILTER: Ignore messages sent by us (fromMe: True)
-        if message_data.get("fromMe") is True:
-            logger.info("Ignoring outgoing message (fromMe: True)")
-            return {"status": "ignored", "reason": "outgoing_message"}
-
-        # DEDUPLICATION: Check if message has already been processed
-        message_id = message_data.get("id")
-        if message_id:
-            cache_key = f"waha:message:{message_id}"
-
-            # Check if message was already processed
-            if redis_client.get(cache_key):
-                logger.info(
-                    "Duplicate message ignored",
-                    extra={"message_id": message_id, "reason": "already_processed"}
-                )
-                webhook_requests_total.labels(source="waha", status="duplicate").inc()
-                return {"status": "ignored", "reason": "duplicate_message", "message_id": message_id}
-
-            # Mark message as processed (expire after 1 hour to prevent memory buildup)
-            redis_client.setex(cache_key, timedelta(hours=1), "processed")
-            logger.debug(
-                "Message marked as processed",
-                extra={"message_id": message_id, "cache_key": cache_key}
-            )
-
-        # Transform to Chatwoot-compatible format
-        transformed_payload = {
-            "id": message_data.get("id"),
-            "conversation": {
-                "id": message_data.get("from")  # Use phone number as conversation ID
-            },
-            "sender": {
-                "id": message_data.get("from"),
-                "name": message_data.get("_data", {}).get("notifyName", "Unknown"),
-                "phone_number": message_data.get("from")
-            },
-            "content": message_data.get("body", ""),
-            "message_type": "incoming",
-            "channel": "whatsapp",
-            "source": "waha"
-        }
-
-        # Queue message processing
-        task = process_message_async.delay(transformed_payload)
-
-        logger.info(
-            "WAHA message queued",
-            extra={"message_id": message_data.get("id"), "task_id": task.id}
-        )
-
-        webhook_requests_total.labels(source="waha", status="queued").inc()
-
-        return {
-            "status": "queued",
-            "task_id": task.id,
-            "message_id": message_data.get("id")
-        }
-
-    except HTTPException:
-        # Re-raise HTTP exceptions (signature validation errors)
-        webhook_signature_errors_total.labels(source="waha").inc()
-        raise
-    except Exception as e:
-        logger.error("WAHA webhook failed", extra={"error": str(e)}, exc_info=True)
-        webhook_requests_total.labels(source="waha", status="error").inc()
 
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -380,115 +254,71 @@ async def dialog360_webhook(
 
 # ============ HELPER FUNCTIONS ============
 
-async def _forward_chatwoot_to_waha(payload: dict) -> None:
+async def _forward_chatwoot_to_twilio(payload: dict) -> None:
     """
-    Forward human agent message from Chatwoot to WhatsApp via WAHA.
-
-    DEDUPLICATION: Checks if message was already sent by bot to prevent duplicates.
+    Forward human agent message from Chatwoot to WhatsApp via Twilio.
 
     Args:
         payload: Chatwoot webhook payload with outgoing message
     """
-    import httpx
-
     try:
+        from app.integrations.twilio_client import get_twilio_client
+
         # Extract conversation and message details
         conversation = payload.get("conversation", {})
         content = payload.get("content", "")
 
-        # Get WhatsApp chat ID from conversation
-        # Conversation ID in Chatwoot contains the phone number (e.g., "31612345678@c.us")
+        # Get phone number from conversation
         conversation_id = str(conversation.get("id", ""))
 
-        # If conversation_id doesn't contain @c.us, it's a Chatwoot numeric ID
-        # We need to get the actual WhatsApp number from source_id
-        chat_id = conversation_id
-        if "@c.us" not in conversation_id:
-            # Get source_id (WhatsApp phone number) from conversation meta
-            source_id = conversation.get("meta", {}).get("sender", {}).get("phone_number", "")
+        # Try to get phone number from conversation meta or contact_inbox
+        phone_number = conversation.get("meta", {}).get("sender", {}).get("phone_number", "")
 
-            if not source_id:
-                # Alternative: try to get from contact_inbox
-                contact_inbox = conversation.get("contact_inbox", {})
-                source_id = contact_inbox.get("source_id", "")
+        if not phone_number:
+            # Alternative: try contact_inbox source_id
+            contact_inbox = conversation.get("contact_inbox", {})
+            phone_number = contact_inbox.get("source_id", "")
 
-            if source_id:
-                # Ensure source_id has @c.us suffix
-                if "@c.us" not in source_id:
-                    # Clean and format phone number
-                    clean_phone = source_id.replace("+", "").replace(" ", "")
-                    chat_id = f"{clean_phone}@c.us"
-                else:
-                    chat_id = source_id
-            else:
-                logger.warning(
-                    "Cannot forward message: no WhatsApp phone number found",
-                    extra={"conversation_id": conversation_id}
-                )
-                return
-
-        # ============ ENTERPRISE DEDUPLICATION LOGIC ============
-        # Check if this message was already sent by bot (EVP-recommended pattern)
-        message_hash = hashlib.sha256(f"{chat_id}:{content}".encode()).hexdigest()[:16]
-        cache_key = f"waha:send:dedupe:{chat_id}:{message_hash}"
-
-        if redis_client.get(cache_key):
-            logger.info(
-                "🚫 Human agent message NOT forwarded (bot already sent identical message)",
-                extra={
-                    "chat_id": chat_id,
-                    "conversation_id": conversation_id,
-                    "message_hash": message_hash,
-                    "reason": "duplicate_prevented_by_cache"
-                }
+        if not phone_number:
+            logger.warning(
+                "Cannot forward message: no phone number found",
+                conversation_id=conversation_id
             )
-            return  # Skip sending - duplicate detected
+            return
 
-        # Mark as sending (prevents concurrent duplicate sends)
-        redis_client.setex(cache_key, timedelta(seconds=30), "sending")
-        logger.debug(
-            "📝 Human agent WAHA send marked in progress",
-            extra={"cache_key": cache_key, "chat_id": chat_id}
+        # Get Twilio client
+        twilio_client = get_twilio_client()
+
+        # Send message (deduplication handled by client)
+        result = await twilio_client.send_message(
+            to_number=phone_number,
+            message=content
         )
-        # =========================================================
 
-        # Send message via WAHA
-        waha_url = os.getenv("WAHA_BASE_URL", "http://waha:3000")
-        waha_session = os.getenv("WAHA_SESSION", "default")
-
-        url = f"{waha_url}/api/sendText"
-
-        payload_waha = {
-            "session": waha_session,
-            "chatId": chat_id,
-            "text": content
-        }
-
-        async with httpx.AsyncClient() as client:
-            response = await client.post(url, json=payload_waha, timeout=10.0)
-            response.raise_for_status()
-
-        # Update cache to "sent" status (successful send)
-        redis_client.setex(cache_key, timedelta(seconds=30), "sent")
-
-        logger.info(
-            "✅ Human agent message sent to WhatsApp",
-            extra={
-                "chat_id": chat_id,
-                "conversation_id": conversation_id,
-                "message_length": len(content),
-                "cache_key": cache_key
-            }
-        )
+        if result["status"] == "sent":
+            logger.info(
+                "✅ Human agent message sent via Twilio",
+                phone_number=phone_number,
+                conversation_id=conversation_id,
+                message_sid=result.get("message_sid")
+            )
+        elif result["status"] == "duplicate":
+            logger.info(
+                "🚫 Human agent message NOT forwarded (duplicate)",
+                phone_number=phone_number,
+                conversation_id=conversation_id
+            )
+        else:
+            logger.error(
+                "❌ Failed to forward message via Twilio",
+                phone_number=phone_number,
+                error=result.get("error")
+            )
 
     except Exception as e:
-        # On error, remove cache to allow retry
-        if 'cache_key' in locals():
-            redis_client.delete(cache_key)
-
         logger.error(
-            f"❌ Failed to forward message to WhatsApp: {e}",
-            extra={"error": str(e)},
+            "❌ Failed to forward message to Twilio",
+            error=str(e),
             exc_info=True
         )
 

@@ -7,21 +7,19 @@ from typing import Dict, Any
 from celery import Task
 from celery.exceptions import SoftTimeLimitExceeded
 from app.celery_app import celery_app
-from app.monitoring.logging_config import get_logger
+import structlog
 import httpx
 import os
 import hashlib
 import redis
 from datetime import timedelta
 
-logger = get_logger(__name__)
+from app.database.redis_client import get_redis_client
 
-# Initialize Redis client for message deduplication
-redis_client = redis.Redis(
-    host=os.getenv("REDIS_HOST", "redis"),
-    port=int(os.getenv("REDIS_PORT", 6379)),
-    decode_responses=True
-)
+logger = structlog.get_logger(__name__)
+
+# Get centralized Redis client instance
+redis_client = get_redis_client()
 
 class CallbackTask(Task):
     """Base task with error handling and retries."""
@@ -127,73 +125,6 @@ async def _process_with_langgraph(payload: Dict[str, Any]) -> Dict[str, Any]:
         conversation_history = await _fetch_conversation_history(
             conversation.get("id")
         )
-    elif source == "waha":
-        # WAHA messages: Get conversation ID from Chatwoot sync
-        # We need to sync FIRST to get/create the Chatwoot conversation
-        from app.integrations.chatwoot_sync import ChatwootSync
-
-        sync = ChatwootSync()
-
-        # For WAHA, the conversation ID IS the WhatsApp chat ID (e.g., "31639121747@c.us")
-        whatsapp_chat_id = conversation.get("id")
-
-        # Get or create contact
-        contact_id = await sync.get_or_create_contact(
-            phone_number=whatsapp_chat_id,
-            name=sender.get("name", "WhatsApp User")
-        )
-
-        chatwoot_conversation_id = None
-        if contact_id:
-            # Get or create conversation
-            chatwoot_conversation_id = await sync.get_or_create_conversation(
-                contact_id=contact_id,
-                source_id=whatsapp_chat_id
-            )
-
-        # CRITICAL FIX: Store Chatwoot conversation ID for later use
-        # This is needed for _sync_waha_to_chatwoot to work properly
-        payload["chatwoot_conversation_id"] = chatwoot_conversation_id
-
-        if chatwoot_conversation_id:
-            # HYBRID APPROACH: Try Redis cache first, fallback to Chatwoot API
-            cache_key = f"conversation:{whatsapp_chat_id}:history"
-
-            try:
-                cached_history = redis_client.get(cache_key)
-                if cached_history:
-                    import json
-                    conversation_history = json.loads(cached_history)
-                    logger.info(
-                        f"✅ Loaded {len(conversation_history)} messages from Redis cache",
-                        extra={
-                            "conversation_id": chatwoot_conversation_id,
-                            "history_count": len(conversation_history),
-                            "cache_key": cache_key,
-                            "source": "redis_cache"
-                        }
-                    )
-                else:
-                    # Fetch from Chatwoot API
-                    conversation_history = await _fetch_conversation_history(
-                        str(chatwoot_conversation_id)
-                    )
-                    logger.info(
-                        f"✅ Fetched {len(conversation_history)} messages from Chatwoot history",
-                        extra={
-                            "conversation_id": chatwoot_conversation_id,
-                            "history_count": len(conversation_history),
-                            "source": "chatwoot_api"
-                        }
-                    )
-            except Exception as e:
-                logger.warning(
-                    f"Redis cache read failed, falling back to Chatwoot API: {e}",
-                    extra={"cache_key": cache_key}
-                )
-                conversation_history = await _fetch_conversation_history(
-                    str(chatwoot_conversation_id)
-                )
 
     # Create initial state using helper function
     initial_state = create_initial_state(
@@ -230,57 +161,26 @@ async def _process_with_langgraph(payload: Dict[str, Any]) -> Dict[str, Any]:
             }
         )
 
-        if source == "waha":
-            # Send directly via WAHA for messages from WAHA webhook
-            await _send_to_waha(
-                chat_id=final_state["conversation_id"],
-                message=conversation_output["response_text"]
-            )
+        # Send via Twilio WhatsApp Business API
+        phone_number = final_state["conversation_id"]  # Should be E.164 format
 
-            # ALSO sync to Chatwoot for visibility/history
-            chatwoot_conv_id = payload.get("chatwoot_conversation_id")
-            if chatwoot_conv_id:
-                await _sync_waha_to_chatwoot(
-                    chatwoot_conversation_id=chatwoot_conv_id,
-                    phone_number=final_state["conversation_id"],  # WhatsApp chat ID
-                    sender_name=final_state.get("sender_name", "WhatsApp User"),
-                    incoming_message=final_state["content"],
-                    outgoing_message=conversation_output["response_text"]
-                )
-            else:
-                logger.warning("⚠️ No Chatwoot conversation ID - skipping Chatwoot sync")
+        await _send_to_twilio(
+            phone_number=phone_number,
+            message=conversation_output["response_text"]
+        )
 
-            # UPDATE REDIS CACHE with latest conversation history
-            # This ensures next message has immediate access to history
-            await _update_conversation_cache(
-                chat_id=final_state["conversation_id"],
-                user_message=final_state["content"],
-                assistant_message=conversation_output["response_text"],
-                conversation_history=final_state.get("conversation_history", [])
+        # Sync to Chatwoot for unified view
+        chatwoot_conv_id = payload.get("chatwoot_conversation_id")
+        if chatwoot_conv_id:
+            await _sync_twilio_to_chatwoot(
+                chatwoot_conversation_id=chatwoot_conv_id,
+                phone_number=phone_number,
+                sender_name=final_state.get("sender_name", "WhatsApp User"),
+                incoming_message=final_state["content"],
+                outgoing_message=conversation_output["response_text"]
             )
-        elif source == "twilio":
-            # Send directly via Twilio WhatsApp for Twilio-sourced messages
-            await _send_to_twilio(
-                phone_number=sender.get("phone_number", ""),
-                message=conversation_output["response_text"]
-            )
-
-            # Optional: Sync to Chatwoot for unified view (future enhancement)
-            # TODO: Implement Chatwoot sync for Twilio messages if needed
-
-        elif source in ["chatwoot", None]:
-            # Send via Chatwoot for Chatwoot messages (or fallback)
-            await _send_to_chatwoot(
-                conversation_id=final_state["conversation_id"],
-                message=conversation_output["response_text"]
-            )
-        elif source == "360dialog":
-            # TODO: Add 360Dialog direct sending if needed
-            logger.warning("360Dialog direct response not implemented, using Chatwoot fallback")
-            await _send_to_chatwoot(
-                conversation_id=final_state["conversation_id"],
-                message=conversation_output["response_text"]
-            )
+        else:
+            logger.warning("⚠️ No Chatwoot conversation ID - skipping Chatwoot sync")
 
     # Return processing summary
     # Safe None handling for router_output
@@ -380,100 +280,6 @@ async def _send_to_chatwoot(conversation_id: int, message: str) -> None:
         extra={"conversation_id": conversation_id}
     )
 
-async def _send_to_waha(chat_id: str, message: str) -> None:
-    """
-    Send agent response directly to WhatsApp via WAHA API.
-
-    DEDUPLICATION: Prevents duplicate sends within 30-second window using Redis cache.
-
-    Args:
-        chat_id: WhatsApp chat ID (e.g., "31612345678@c.us")
-        message: Response message to send
-    """
-    waha_url = os.getenv("WAHA_BASE_URL", "http://waha:3000")
-    waha_session = os.getenv("WAHA_SESSION", "default")
-    waha_api_key = os.getenv("WAHA_API_KEY")
-
-    # CRITICAL FIX: Ensure message is always a string, never a dict/object
-    # If message is accidentally a dict (JSON object), extract text or stringify
-    if isinstance(message, dict):
-        logger.warning(
-            "⚠️ WAHA message is dict, extracting response_text",
-            extra={"message_keys": list(message.keys())}
-        )
-        # Try to extract response_text if it's a ConversationOutput dict
-        message = message.get("response_text", str(message))
-
-    # Ensure message is string type
-    message = str(message)
-
-    # ============ ENTERPRISE DEDUPLICATION LOGIC ============
-    # Generate hash of message content + recipient (EVP-recommended pattern)
-    message_hash = hashlib.sha256(f"{chat_id}:{message}".encode()).hexdigest()[:16]
-    cache_key = f"waha:send:dedupe:{chat_id}:{message_hash}"
-
-    # Check if this exact message was sent recently (last 30 seconds)
-    if redis_client.get(cache_key):
-        logger.info(
-            "🚫 Duplicate WAHA send prevented (message already sent)",
-            extra={
-                "chat_id": chat_id,
-                "message_hash": message_hash,
-                "cache_key": cache_key,
-                "reason": "duplicate_prevented_by_cache"
-            }
-        )
-        return  # Skip sending - duplicate detected
-
-    # Mark as sending (prevents concurrent duplicate sends from multiple workers)
-    redis_client.setex(cache_key, timedelta(seconds=30), "sending")
-    logger.debug(
-        "📝 WAHA send marked in progress",
-        extra={"cache_key": cache_key, "chat_id": chat_id}
-    )
-    # =========================================================
-
-    url = f"{waha_url}/api/sendText"
-
-    payload = {
-        "session": waha_session,
-        "chatId": chat_id,
-        "text": message
-    }
-
-    headers = {
-        "X-Api-Key": waha_api_key,
-        "Content-Type": "application/json"
-    }
-
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(url, json=payload, headers=headers, timeout=10.0)
-            response.raise_for_status()
-
-        # Update cache to "sent" status (successful send)
-        redis_client.setex(cache_key, timedelta(seconds=30), "sent")
-
-        logger.info(
-            "✅ Message sent to WAHA",
-            extra={
-                "chat_id": chat_id,
-                "message_length": len(message),
-                "cache_key": cache_key
-            }
-        )
-
-    except httpx.HTTPError as e:
-        # On error, remove cache to allow retry
-        redis_client.delete(cache_key)
-
-        logger.error(
-            f"❌ Failed to send message via WAHA: {e}",
-            extra={"chat_id": chat_id, "error": str(e)},
-            exc_info=True
-        )
-        raise
-
 async def _send_to_twilio(phone_number: str, message: str) -> None:
     """
     Send agent response directly to WhatsApp via Twilio API.
@@ -528,7 +334,7 @@ async def _send_to_twilio(phone_number: str, message: str) -> None:
         )
         raise
 
-async def _sync_waha_to_chatwoot(
+async def _sync_twilio_to_chatwoot(
     chatwoot_conversation_id: int,
     phone_number: str,
     sender_name: str,
@@ -536,15 +342,12 @@ async def _sync_waha_to_chatwoot(
     outgoing_message: str
 ) -> None:
     """
-    Sync WAHA messages to Chatwoot for chat history visibility.
-
-    CRITICAL FIX: Now accepts chatwoot_conversation_id directly instead of creating it.
-    This prevents 404 errors when trying to send to non-existent conversations.
+    Sync Twilio WhatsApp messages to Chatwoot for chat history visibility.
 
     Args:
         chatwoot_conversation_id: Existing Chatwoot conversation ID (integer)
-        phone_number: WhatsApp chat ID (e.g., "31612345678@c.us")
-        sender_name: Sender's display name from WAHA
+        phone_number: WhatsApp phone number (E.164 format, e.g., "+31612345678")
+        sender_name: Sender's display name
         incoming_message: User's incoming message
         outgoing_message: AI's response message
     """
@@ -568,91 +371,20 @@ async def _sync_waha_to_chatwoot(
         )
 
         logger.info(
-            "✅ Messages synced to Chatwoot",
-            extra={
-                "phone_number": phone_number,
-                "chatwoot_conversation_id": chatwoot_conversation_id
-            }
+            "✅ Twilio messages synced to Chatwoot",
+            phone_number=phone_number,
+            chatwoot_conversation_id=chatwoot_conversation_id
         )
 
     except Exception as e:
         logger.error(
-            f"⚠️ Chatwoot sync failed (non-critical): {e}",
-            extra={
-                "phone_number": phone_number,
-                "chatwoot_conversation_id": chatwoot_conversation_id
-            },
+            "⚠️ Chatwoot sync failed (non-critical)",
+            phone_number=phone_number,
+            chatwoot_conversation_id=chatwoot_conversation_id,
+            error=str(e),
             exc_info=True
         )
-        # Don't raise - sync failure shouldn't break WAHA message flow
-
-async def _update_conversation_cache(
-    chat_id: str,
-    user_message: str,
-    assistant_message: str,
-    conversation_history: list
-) -> None:
-    """
-    Update Redis cache with latest conversation history.
-
-    This ensures next message has immediate access to updated history,
-    avoiding the timing issue where history is fetched before sync completes.
-
-    Args:
-        chat_id: WhatsApp chat ID (e.g., "31612345678@c.us")
-        user_message: User's incoming message just processed
-        assistant_message: AI's response just sent
-        conversation_history: Previous conversation history from state
-    """
-    try:
-        import json
-        from datetime import datetime
-
-        cache_key = f"conversation:{chat_id}:history"
-
-        # Build updated history: previous + current exchange
-        updated_history = list(conversation_history)  # Copy existing history
-
-        # Add current user message
-        updated_history.append({
-            "role": "user",
-            "content": user_message,
-            "timestamp": datetime.now().isoformat()
-        })
-
-        # Add current assistant response
-        updated_history.append({
-            "role": "assistant",
-            "content": assistant_message,
-            "timestamp": datetime.now().isoformat()
-        })
-
-        # Keep only last 10 messages (5 exchanges) to prevent cache bloat
-        updated_history = updated_history[-10:]
-
-        # Store in Redis with 1 hour TTL
-        redis_client.setex(
-            cache_key,
-            timedelta(hours=1),
-            json.dumps(updated_history)
-        )
-
-        logger.info(
-            "✅ Updated conversation history cache",
-            extra={
-                "cache_key": cache_key,
-                "history_count": len(updated_history),
-                "chat_id": chat_id
-            }
-        )
-
-    except Exception as e:
-        logger.error(
-            f"⚠️ Failed to update conversation cache (non-critical): {e}",
-            extra={"chat_id": chat_id},
-            exc_info=True
-        )
-        # Don't raise - cache failure shouldn't break message flow
+        # Don't raise - sync failure shouldn't break Twilio message flow
 
 async def _escalate_to_human(payload: Dict[str, Any], error: str = None) -> None:
     """

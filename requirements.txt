@@ -30,6 +30,13 @@ pydantic-settings==2.7.1       # Settings management
 requests==2.32.3               # HTTP requests for 360Dialog API
 twilio==8.10.0                 # Twilio SDK for WhatsApp Business API
 
+# ============ CRM & CALENDAR INTEGRATION ============
+hubspot-api-client==9.2.0      # HubSpot CRM API
+google-auth==2.36.0            # Google OAuth
+google-auth-oauthlib==1.2.1    # OAuth flow helpers
+google-auth-httplib2==0.2.0    # HTTP client for Google APIs
+google-api-python-client==2.154.0  # Google Calendar API
+
 # ============ BACKGROUND JOBS ============
 celery==5.4.0                  # Task queue
 redis==5.2.1                   # Celery broker + rate limiting
